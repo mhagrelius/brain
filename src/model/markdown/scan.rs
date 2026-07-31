@@ -254,6 +254,7 @@ fn inline(line: &[char], offset: usize, parsed: &mut Parsed) {
             .or_else(|| try_link(line, i, offset, parsed))
             .or_else(|| try_url(line, i, offset, parsed))
             .or_else(|| try_tag(line, i, offset, parsed))
+            .or_else(|| try_both_emphases(line, i, offset, parsed))
             .or_else(|| try_emphasis(line, i, offset, parsed));
         i = next.unwrap_or(i + 1);
     }
@@ -380,6 +381,45 @@ fn try_tag(line: &[char], i: usize, offset: usize, parsed: &mut Parsed) -> Optio
     }
     parsed.push_span(offset + i, offset + end, Style::Tag);
     Some(end)
+}
+
+/// `***both***` — bold and italic at once.
+///
+/// The one nesting this scanner handles, and it earns its place because the
+/// formatting buttons produce it: italicising something already bold writes
+/// exactly this. Without it the run parsed as bold wrapped around a stray
+/// asterisk, which is what the buttons appeared to be "chaining".
+///
+/// Both styles are reported over the same text. The markers are the two runs
+/// of three, so hiding them still leaves the words.
+fn try_both_emphases(line: &[char], i: usize, offset: usize, parsed: &mut Parsed) -> Option<usize> {
+    let delimiter = *line.get(i)?;
+    if delimiter != '*' && delimiter != '_' {
+        return None;
+    }
+    let run = [delimiter; 3];
+    if !line[i..].starts_with(&run) {
+        return None;
+    }
+
+    let content_start = i + 3;
+    let close = find(line, content_start, &run)?;
+    if close == content_start {
+        return None; // "******" is not emphasis
+    }
+    // The same hugging rule as single emphasis: a delimiter may not be
+    // followed by a space, nor a closer preceded by one.
+    let opens = line.get(content_start).is_some_and(|c| !c.is_whitespace());
+    let closes = line.get(close - 1).is_some_and(|c| !c.is_whitespace());
+    if !opens || !closes {
+        return None;
+    }
+
+    parsed.push_marker(offset + i, offset + content_start);
+    parsed.push_span(offset + content_start, offset + close, Style::Bold);
+    parsed.push_span(offset + content_start, offset + close, Style::Italic);
+    parsed.push_marker(offset + close, offset + close + 3);
+    Some(close + 3)
 }
 
 /// Bold, strikethrough and italic. Two-character delimiters are tried first, or

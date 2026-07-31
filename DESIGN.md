@@ -273,6 +273,14 @@ Where the finished thing differs from this document, this is what happened.
   right behaviour, but reversing it means restoring several files at once and
   there is no undo stack spanning notes yet. Renaming back does the same work
   in reverse, which is not the same promise.
+- **`***both***` is the one nesting the scanner handles.** Nested emphasis was
+  out of scope until the formatting buttons made it reachable in one click:
+  italicising something already bold writes exactly that, and without it the
+  run parsed as bold wrapped round a stray asterisk. Both styles are reported
+  over the same text, and each comes off independently — which is why an
+  unwrap matches the format's own characters beside the run rather than the
+  marker next to it, since one marker of three cannot say whether to remove
+  two characters or one.
 - **The right pane carries Details as well as Backlinks.** Asked for after
   the first install: something like LibreOffice's sidebar, saying what the note
   is and what can be done to it. The formatting half is the interesting part —

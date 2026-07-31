@@ -793,3 +793,39 @@ fn ordered_and_bulleted_items_nest_the_same_way() {
     assert_eq!(levels("1. a\n  2. b\n    3. c"), [0, 1, 2]);
     assert_eq!(levels("- a\n  1. b"), [0, 1]);
 }
+
+// ---- bold and italic together ----
+
+#[test]
+fn three_delimiters_are_bold_and_italic_at_once() {
+    for source in ["***both***", "___both___"] {
+        let parsed = parse(source);
+        assert_eq!(
+            styles(&parsed),
+            vec![Style::Bold, Style::Italic],
+            "{source:?}"
+        );
+        assert_eq!(text_of(source, &parsed.spans[0]), "both");
+        assert_eq!(text_of(source, &parsed.spans[1]), "both");
+        assert_eq!(rendered(source), "both", "{source:?}");
+    }
+}
+
+#[test]
+fn three_delimiters_do_not_swallow_the_line() {
+    let source = "a ***both*** b";
+    assert_eq!(rendered(source), "a both b");
+}
+
+#[test]
+fn half_typed_triples_stay_plain() {
+    for source in ["***unfinished", "*** spaced ***", "******"] {
+        assert_eq!(rendered(source), source, "{source:?}");
+    }
+}
+
+#[test]
+fn bold_and_italic_still_work_apart() {
+    assert_eq!(styles(&parse("**bold**")), vec![Style::Bold]);
+    assert_eq!(styles(&parse("*italic*")), vec![Style::Italic]);
+}
