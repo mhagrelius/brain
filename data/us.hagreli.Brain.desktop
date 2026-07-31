@@ -1,0 +1,23 @@
+[Desktop Entry]
+Type=Application
+Name=Brain
+GenericName=Markdown Notebook
+Comment=Write and link notes in a folder you own
+Categories=Office;TextEditor;GNOME;GTK;
+Keywords=note;notes;notebook;markdown;wiki;zettelkasten;knowledge;
+Exec=brain
+Icon=us.hagreli.Brain
+Terminal=false
+StartupNotify=true
+# Must match the application ID so the shell associates windows with this entry.
+StartupWMClass=us.hagreli.Brain
+DBusActivatable=true
+Actions=new-note;search;
+
+[Desktop Action new-note]
+Name=New Note
+Exec=brain --new-note
+
+[Desktop Action search]
+Name=Search Notes
+Exec=brain --search

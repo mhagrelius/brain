@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>us.hagreli.Brain</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <name>Brain</name>
+  <summary>Write and link notes in a folder you own</summary>
+
+  <description>
+    <p>
+      Brain is a Markdown notebook for GNOME. Your notes are ordinary .md files
+      in a folder you choose — delete Brain and they are untouched, put the
+      folder in git and you have history, open it in any other editor and it
+      reads the same.
+    </p>
+    <p>Brain adds:</p>
+    <ul>
+      <li>An editor that styles Markdown as you write it, hiding the syntax
+          characters everywhere except the block you are working in</li>
+      <li>[[Wikilinks]] with completion, backlinks, and renames that repoint
+          every link that pointed at a note</li>
+      <li>Tags, inline and in frontmatter, nested and filterable</li>
+      <li>Attachments you drop or paste, with images shown in the note</li>
+      <li>Search by title or through the text of every note</li>
+    </ul>
+    <p>
+      No account, no sync, no plugins, and nothing written into a note that a
+      text editor cannot read.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">us.hagreli.Brain.desktop</launchable>
+
+  <categories>
+    <category>Office</category>
+    <category>Utility</category>
+  </categories>
+
+  <keywords>
+    <keyword>notes</keyword>
+    <keyword>markdown</keyword>
+    <keyword>wiki</keyword>
+    <keyword>notebook</keyword>
+  </keywords>
+
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+    <control>touch</control>
+  </supports>
+
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-07-31">
+      <description>
+        <p>First release.</p>
+      </description>
+    </release>
+  </releases>
+
+  <developer id="us.hagreli">
+    <name>Matthew Hagrelius</name>
+  </developer>
+
+  <url type="homepage">https://github.com/mhagrelius/brain</url>
+  <url type="bugtracker">https://github.com/mhagrelius/brain/issues</url>
+</component>

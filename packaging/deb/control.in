@@ -1,0 +1,24 @@
+Package: brain
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: Matthew Hagrelius <matthew@hagreli.us>
+Installed-Size: @INSTALLED_SIZE@
+Depends: @DEPENDS@
+Section: utils
+Priority: optional
+Homepage: https://github.com/mhagrelius/brain
+Description: A Markdown notebook that leaves your notes as files
+ Brain is a note-taking app for GNOME whose notes are ordinary Markdown files
+ in a folder you choose. Delete Brain and they are untouched; put the folder in
+ git and you have history; open it in any other editor and it reads the same.
+ .
+ The editor styles Markdown as you write it and hides the syntax characters
+ everywhere except the block you are working in, so a note reads as prose while
+ staying plain text on disk.
+ .
+ It adds [[wikilinks]] with completion and backlinks, renames that repoint every
+ link pointing at a note, nested tags from both inline #tags and frontmatter,
+ attachments you drop or paste with images shown in the note, and search across
+ titles or the full text of every note.
+ .
+ No account, no sync, no plugins.

@@ -1,0 +1,653 @@
+//! Widget tests.
+//!
+//! **Exactly one `#[test]` touches a widget, on purpose.** GTK is
+//! thread-affine: it must be initialised on, and only ever touched from, one
+//! thread. `cargo test` runs tests on separate threads and `--test-threads=1`
+//! still does not guarantee they share one, so a second `#[test]` building a
+//! widget is a crash waiting for a scheduler to find it. The widget cases are
+//! therefore a hand-rolled runner inside `widgets`, reporting each by name.
+//!
+//! The other two tests here touch only the GObject type system — registering a
+//! type and constructing a plain `GObject` — which is thread-safe and needs no
+//! display.
+//!
+//! Windows are constructed and driven but never presented — mapping a window
+//! needs a compositor, and none of these assertions need one.
+
+use std::fs;
+use std::path::Path;
+
+use adw::prelude::*;
+use brain::model::markdown::{Format, Style};
+use brain::model::note::NoteId;
+use brain::ui::{BrainWindow, Editor, NoteObject, Sidebar};
+use gtk::glib;
+
+/// A one-pixel PNG, so an embed has a real file to resolve to.
+const PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+    0x42, 0x60, 0x82,
+];
+
+/// Cases run in order; each gets a fresh window.
+type Case = (&'static str, fn(&BrainWindow, &Path));
+
+#[test]
+fn widgets() {
+    // GTK is initialised directly rather than by running the application. The
+    // real `activate` presents a window and, with no vault configured, opens
+    // the folder chooser — a portal dialog that has no business in a test.
+    //
+    // The windows below are built with no application attached at all.
+    // Attaching one that has not emitted `startup` earns a `Gtk-CRITICAL` per
+    // window, and noise like that is what hides a real one. The window is
+    // built to tolerate it: every handler that needs the application asks for
+    // it and does nothing when there is none, which is also what happens
+    // during teardown.
+    adw::init().expect("GTK and libadwaita initialise");
+
+    let mut failures = Vec::<String>::new();
+    for (name, case) in CASES {
+        let vault = tempfile::tempdir().expect("temp dir");
+        seed(vault.path());
+        let window: BrainWindow = glib::Object::new();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            case(&window, vault.path());
+        }));
+        if let Err(panic) = result {
+            let message = panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_else(|| "panicked".to_string());
+            failures.push(format!("{name}: {message}"));
+        }
+
+        window.destroy();
+    }
+
+    assert!(failures.is_empty(), "\n  {}", failures.join("\n  "));
+}
+
+/// Visit every widget under `root`, including popovers and dialog children.
+fn walk(root: &gtk::Widget, visit: &mut impl FnMut(&gtk::Widget)) {
+    visit(root);
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        walk(&widget, visit);
+        child = widget.next_sibling();
+    }
+}
+
+fn seed(root: &Path) {
+    fs::write(
+        root.join("Rust ownership.md"),
+        "# Rust ownership\n\nMoves.\n",
+    )
+    .expect("write");
+    fs::create_dir_all(root.join("Meetings")).expect("dir");
+    fs::write(root.join("Meetings/Standup.md"), "Notes from standup.\n").expect("write");
+}
+
+const CASES: &[Case] = &[
+    ("a new window opens with no note", |window, _| {
+        assert!(
+            window.editor_body().is_some(),
+            "the editor should exist even with nothing open"
+        );
+        assert_eq!(window.editor_body().unwrap_or_default(), "");
+    }),
+    ("showing a note puts its body in the editor", |window, _| {
+        let id = NoteId::from_relative("Rust ownership.md");
+        window.show_note(Some((&id, "# Rust ownership\n\nMoves.\n")));
+        assert_eq!(
+            window.editor_body().unwrap_or_default(),
+            "# Rust ownership\n\nMoves.\n"
+        );
+    }),
+    ("closing a note empties the editor", |window, _| {
+        let id = NoteId::from_relative("A.md");
+        window.show_note(Some((&id, "body")));
+        window.show_note(None);
+        assert_eq!(window.editor_body().unwrap_or_default(), "");
+    }),
+    (
+        "the note list accepts notes and an empty vault",
+        |window, _| {
+            let notes = vec![
+                (NoteId::from_relative("A.md"), "first".to_string()),
+                (NoteId::from_relative("Meetings/B.md"), String::new()),
+            ];
+            window.set_notes(&notes);
+            window.select_note(Some(&NoteId::from_relative("A.md")));
+            // Selecting a note that is not in the list clears the highlight rather
+            // than leaving the previous one looking current.
+            window.select_note(Some(&NoteId::from_relative("Gone.md")));
+            window.select_note(None);
+            window.set_notes(&[]);
+        },
+    ),
+    ("the save banner shows and clears", |window, _| {
+        window.set_save_error(Some("Not saving: disk full"));
+        window.set_save_error(None);
+    }),
+    ("a toast can be raised with no note open", |window, _| {
+        window.toast("Saved");
+    }),
+    (
+        "a loaded note arrives already styled, not on the first keystroke",
+        |window, _| {
+            let id = NoteId::from_relative("Rust ownership.md");
+            window.show_note(Some((&id, "# Title\n\nSome **bold** text.\n")));
+            let parsed = window.editor_parsed().expect("an editor");
+            assert!(
+                parsed.spans.iter().any(|s| s.style == Style::Heading(1)),
+                "the heading was not styled on load"
+            );
+            assert!(!parsed.markers.is_empty(), "no syntax was marked");
+        },
+    ),
+    (
+        "typing inside a line agrees with a full re-scan",
+        |window, _| {
+            // The incremental path is the whole performance argument, and a
+            // disagreement here is styling that drifts as you type and only a
+            // reload fixes. Each case types one character into a note and
+            // compares the cached scan with what parsing the text outright
+            // gives.
+            let cases: &[(&str, usize, &str)] = &[
+                ("Some bold text.", 5, "*"),
+                ("A [[Link]] here.", 15, "!"),
+                ("# Heading", 9, "!"),
+                ("| a | b |\n|---|---|\n| 1 | 2 |", 28, " "),
+                ("- [ ] a task", 11, "s"),
+                ("Tagged #rust here", 12, "y"),
+                ("> quoted line", 13, "s"),
+                ("plain text", 5, "x"),
+            ];
+
+            for (body, at, typed) in cases {
+                let id = NoteId::from_relative("Case.md");
+                window.show_note(Some((&id, body)));
+
+                let editor = window.editor().expect("an editor");
+                let before = editor.full_rescans_for_test();
+                editor.insert_at_for_test(*at, typed);
+
+                // Without this the test would pass just as happily against an
+                // editor that re-scanned everything on every keystroke, which
+                // is exactly the thing the cache exists to avoid.
+                assert_eq!(
+                    editor.full_rescans_for_test(),
+                    before,
+                    "typing {typed:?} into {body:?} escalated to a full re-scan"
+                );
+
+                let expected = {
+                    let text = editor.body();
+                    brain::model::markdown::parse(&text)
+                };
+                let actual = editor.parsed();
+
+                let mut actual_spans = actual.spans.clone();
+                let mut expected_spans = expected.spans.clone();
+                actual_spans.sort_by_key(|s| (s.start, s.end));
+                expected_spans.sort_by_key(|s| (s.start, s.end));
+                assert_eq!(
+                    actual_spans, expected_spans,
+                    "spans drifted after typing {typed:?} into {body:?}"
+                );
+
+                let mut actual_markers = actual.markers.clone();
+                let mut expected_markers = expected.markers.clone();
+                actual_markers.sort_by_key(|m| (m.start, m.end));
+                expected_markers.sort_by_key(|m| (m.start, m.end));
+                assert_eq!(
+                    actual_markers, expected_markers,
+                    "markers drifted after typing {typed:?} into {body:?}"
+                );
+            }
+        },
+    ),
+    (
+        "a link reports itself when followed, and plain text does not",
+        |window, _| {
+            let id = NoteId::from_relative("A.md");
+            window.show_note(Some((&id, "See [[Borrow checker]] today.\n")));
+            let editor = window.editor().expect("an editor");
+
+            let followed = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+            let seen = followed.clone();
+            editor.connect_closure(
+                "link-activated",
+                false,
+                glib::closure_local!(move |_: Editor, target: String| {
+                    seen.borrow_mut().push(target);
+                }),
+            );
+
+            // Inside the brackets.
+            assert!(editor.follow_link_at_for_test(8), "the link was not found");
+            // Outside them.
+            assert!(
+                !editor.follow_link_at_for_test(0),
+                "plain text was treated as a link"
+            );
+
+            assert_eq!(followed.borrow().as_slice(), ["Borrow checker".to_string()]);
+        },
+    ),
+    ("a link inside code is not clickable", |window, _| {
+        // The editor asks the scanner what a link is, so anything it did
+        // not style as one is not one here either.
+        let id = NoteId::from_relative("A.md");
+        window.show_note(Some((&id, "`[[Not a link]]` here\n")));
+        let editor = window.editor().expect("an editor");
+        assert!(!editor.follow_link_at_for_test(5));
+    }),
+    ("typing two brackets asks for candidates", |window, _| {
+        let id = NoteId::from_relative("A.md");
+        window.show_note(Some((&id, "See ")));
+        let editor = window.editor().expect("an editor");
+
+        let queries = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let seen = queries.clone();
+        editor.connect_closure(
+            "link-query",
+            false,
+            glib::closure_local!(move |_: Editor, query: String| {
+                seen.borrow_mut().push(query);
+            }),
+        );
+
+        // Typed one character at a time, as a person would.
+        for (at, character) in [(4, "["), (5, "["), (6, "B"), (7, "o"), (8, "r")] {
+            editor.insert_at_for_test(at, character);
+        }
+
+        assert_eq!(
+            queries.borrow().as_slice(),
+            [
+                "".to_string(),
+                "B".to_string(),
+                "Bo".to_string(),
+                "Bor".to_string()
+            ],
+            "the query did not track what was typed"
+        );
+    }),
+    (
+        "accepting a candidate closes the brackets and moves on",
+        |window, _| {
+            let id = NoteId::from_relative("A.md");
+            window.show_note(Some((&id, "See ")));
+            let editor = window.editor().expect("an editor");
+
+            editor.insert_at_for_test(4, "[[Bor");
+            editor.accept_completion_for_test("Borrow checker");
+
+            assert_eq!(editor.body(), "See [[Borrow checker]]");
+        },
+    ),
+    ("a tag reports itself when followed", |window, _| {
+        let id = NoteId::from_relative("A.md");
+        window.show_note(Some((&id, "About #project/brain today.\n")));
+        let editor = window.editor().expect("an editor");
+
+        let followed = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let seen = followed.clone();
+        editor.connect_closure(
+            "tag-activated",
+            false,
+            glib::closure_local!(move |_: Editor, tag: String| {
+                seen.borrow_mut().push(tag);
+            }),
+        );
+
+        assert!(editor.follow_link_at_for_test(8), "the tag was not found");
+        assert_eq!(followed.borrow().as_slice(), ["project/brain".to_string()]);
+
+        // A hash inside code is not a tag, so it is not clickable either.
+        window.show_note(Some((&id, "`#rust` here\n")));
+        assert!(!editor.follow_link_at_for_test(2));
+    }),
+    ("the tag tree shows counts and empties out", |window, _| {
+        window.set_tags(&[
+            ("project".to_string(), 2),
+            ("project/brain".to_string(), 1),
+            ("rust".to_string(), 3),
+        ]);
+        window.set_active_tag(Some("project/brain"));
+        // A tag that is not in the tree clears the highlight rather than
+        // leaving the previous one looking current.
+        window.set_active_tag(Some("gone"));
+        window.set_active_tag(None);
+        window.set_tags(&[]);
+    }),
+    (
+        "an embed does not put a character in the buffer",
+        |window, vault| {
+            // The invariant the whole offset scheme rests on: what the editor
+            // holds is exactly what the file holds. A child anchor would add a
+            // U+FFFC here and silently corrupt the note on save.
+            let attachments = vault.join("attachments");
+            std::fs::create_dir_all(&attachments).expect("dir");
+            std::fs::write(attachments.join("d.png"), PNG).expect("write");
+
+            let body = "Before\n![[d.png]]\nAfter\n";
+            window.set_vault_root(Some(vault.to_path_buf()));
+            let id = NoteId::from_relative("A.md");
+            window.show_note(Some((&id, body)));
+
+            assert_eq!(
+                window.editor_body().unwrap_or_default(),
+                body,
+                "the buffer no longer matches the file"
+            );
+        },
+    ),
+    (
+        "inserting an embed puts it on a line of its own",
+        |window, vault| {
+            window.set_vault_root(Some(vault.to_path_buf()));
+            let id = NoteId::from_relative("A.md");
+            window.show_note(Some((&id, "Some prose.")));
+
+            let editor = window.editor().expect("an editor");
+            editor.insert_at_for_test(11, "");
+            editor.insert_embed("d.png");
+
+            assert_eq!(editor.body(), "Some prose.\n![[d.png]]\n");
+        },
+    ),
+    (
+        "a missing attachment is reported, not drawn as a broken image",
+        |window, vault| {
+            // Nothing on disk, so this exercises the absent path.
+            window.set_vault_root(Some(vault.to_path_buf()));
+            let id = NoteId::from_relative("A.md");
+            window.show_note(Some((&id, "![[gone.png]]\n")));
+            assert_eq!(window.editor_body().unwrap_or_default(), "![[gone.png]]\n");
+        },
+    ),
+    (
+        "the unused attachments dialog handles both states",
+        |window, _| {
+            window.show_unused_attachments(&[]);
+            window.show_unused_attachments(&["orphan.png".to_string()]);
+        },
+    ),
+    (
+        "the palette shows hits, reports what was picked, and empties out",
+        |_window, _| {
+            let palette = brain::ui::Palette::new();
+
+            let chosen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+            let seen = chosen.clone();
+            palette.connect_closure(
+                "chosen",
+                false,
+                glib::closure_local!(move |_: brain::ui::Palette, id: String| {
+                    seen.borrow_mut().push(id);
+                }),
+            );
+
+            palette.set_hits(&[
+                brain::ui::Hit {
+                    id: "Rust ownership.md".to_string(),
+                    title: "Rust ownership".to_string(),
+                    detail: "Moves are destructive".to_string(),
+                    highlight: Some((10, 21)),
+                },
+                brain::ui::Hit {
+                    id: "Meetings/Standup.md".to_string(),
+                    title: "Standup".to_string(),
+                    detail: "Meetings".to_string(),
+                    highlight: None,
+                },
+            ]);
+
+            // An empty result set is a state, not a failure.
+            palette.set_hits(&[]);
+            assert_eq!(palette.mode(), brain::ui::Mode::Title);
+            assert!(chosen.borrow().is_empty());
+        },
+    ),
+    ("every icon-only button has a tooltip", |window, _| {
+        // A header bar of unlabelled icons is unusable without them, and
+        // nothing warns when one is missing.
+        //
+        // Only buttons this app built are judged. GTK and libadwaita put
+        // untooltipped buttons inside their own composite widgets — the window
+        // controls, a menu button's toggle, a toggle group's toggles, the back
+        // button, the banner's action — and those are not ours to annotate.
+        const LIBRARY_OWNED: &[&str] = &[
+            "GtkWindowControls",
+            "GtkMenuButton",
+            "AdwBackButton",
+            "AdwBanner",
+            "AdwToggleGroup",
+            "AdwSplitButton",
+        ];
+
+        let mut missing = Vec::new();
+        walk(window.upcast_ref::<gtk::Widget>(), &mut |widget| {
+            let mut parent = widget.parent();
+            while let Some(ancestor) = parent {
+                if LIBRARY_OWNED.contains(&ancestor.type_().to_string().as_str()) {
+                    return;
+                }
+                parent = ancestor.parent();
+            }
+
+            let (has_label, tooltip) = if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+                (
+                    button.label().is_some_and(|label| !label.is_empty()),
+                    button.tooltip_text(),
+                )
+            } else if let Some(button) = widget.downcast_ref::<gtk::MenuButton>() {
+                (
+                    button.label().is_some_and(|label| !label.is_empty()),
+                    button.tooltip_text(),
+                )
+            } else {
+                return;
+            };
+
+            if !has_label && tooltip.map_or(true, |text| text.is_empty()) {
+                let icon = widget
+                    .downcast_ref::<gtk::Button>()
+                    .and_then(|button| button.icon_name())
+                    .or_else(|| {
+                        widget
+                            .downcast_ref::<gtk::MenuButton>()
+                            .and_then(|button| button.icon_name())
+                    })
+                    .map(|name| name.to_string())
+                    .unwrap_or_else(|| "no icon".to_string());
+
+                let mut ancestry = Vec::new();
+                let mut parent = widget.parent();
+                while let Some(widget) = parent {
+                    ancestry.push(widget.type_().to_string());
+                    parent = widget.parent();
+                }
+                missing.push(format!("[{icon}] under {}", ancestry.join(" < ")));
+            }
+        });
+        assert!(missing.is_empty(), "untooltipped icon buttons: {missing:?}");
+    }),
+    (
+        "nothing uses the deprecated .dim-label class",
+        |window, _| {
+            let mut offenders = Vec::new();
+            walk(window.upcast_ref::<gtk::Widget>(), &mut |widget| {
+                if widget.has_css_class("dim-label") {
+                    offenders.push(format!("{:?}", widget.type_()));
+                }
+            });
+            assert!(offenders.is_empty(), "{offenders:?}");
+        },
+    ),
+    ("formatting wraps a selection", |window, _| {
+        let id = NoteId::from_relative("A.md");
+        window.show_note(Some((&id, "make this bold please")));
+        let editor = window.editor().expect("an editor");
+
+        let buffer = editor.buffer_for_test();
+        buffer.select_range(&buffer.iter_at_offset(10), &buffer.iter_at_offset(14));
+        editor.apply_format(Format::Bold);
+
+        assert_eq!(editor.body(), "make this **bold** please");
+    }),
+    (
+        "formatting with no selection leaves the caret to type in",
+        |window, _| {
+            let id = NoteId::from_relative("A.md");
+            window.show_note(Some((&id, "type here: ")));
+            let editor = window.editor().expect("an editor");
+
+            let buffer = editor.buffer_for_test();
+            buffer.place_cursor(&buffer.end_iter());
+            editor.apply_format(Format::Italic);
+
+            assert_eq!(editor.body(), "type here: **");
+            let caret = buffer.iter_at_mark(&buffer.get_insert()).offset();
+            assert_eq!(caret, 12, "the caret should sit between the markers");
+        },
+    ),
+    (
+        "a block format toggles off when pressed twice",
+        |window, _| {
+            // Otherwise the buttons are one-way and quoting by accident is
+            // unfixable except by hand.
+            let id = NoteId::from_relative("A.md");
+            window.show_note(Some((&id, "a line")));
+            let editor = window.editor().expect("an editor");
+
+            let buffer = editor.buffer_for_test();
+            buffer.place_cursor(&buffer.start_iter());
+            editor.apply_format(Format::Quote);
+            assert_eq!(editor.body(), "> a line");
+
+            buffer.place_cursor(&buffer.start_iter());
+            editor.apply_format(Format::Quote);
+            assert_eq!(editor.body(), "a line");
+        },
+    ),
+    (
+        "inserting a table writes one on its own lines",
+        |window, _| {
+            let id = NoteId::from_relative("A.md");
+            window.show_note(Some((&id, "before")));
+            let editor = window.editor().expect("an editor");
+
+            let buffer = editor.buffer_for_test();
+            buffer.place_cursor(&buffer.end_iter());
+            editor.apply_format(Format::Table);
+
+            let body = editor.body();
+            assert!(body.starts_with("before\n|"), "{body:?}");
+            // And what it wrote is a table to the scanner, not just pipes.
+            assert!(brain::model::markdown::parse(&body)
+                .spans
+                .iter()
+                .any(|span| span.style == Style::TableRow));
+        },
+    ),
+    ("every formatting button reaches the editor", |window, _| {
+        // The panel reports a name; the window turns it back into a format
+        // and applies it. A name that does not survive is a dead button.
+        let id = NoteId::from_relative("A.md");
+        for format in [
+            Format::Bold,
+            Format::Italic,
+            Format::Strikethrough,
+            Format::Code,
+            Format::Heading(1),
+            Format::Heading(2),
+            Format::Heading(3),
+            Format::Quote,
+            Format::Bullet,
+            Format::Task,
+            Format::WikiLink,
+            Format::Link,
+            Format::CodeBlock,
+            Format::Table,
+            Format::Rule,
+        ] {
+            window.show_note(Some((&id, "x")));
+            let editor = window.editor().expect("an editor");
+            let before = editor.body();
+            window.request_format_for_test(format);
+            assert_ne!(editor.body(), before, "{format:?} changed nothing");
+        }
+    }),
+    (
+        "the backlinks pane shows what links here and empties out",
+        |window, _| {
+            window.set_backlinks(&[(
+                NoteId::from_relative("A.md"),
+                "See Borrow checker for why.".to_string(),
+            )]);
+            window.set_backlinks(&[]);
+        },
+    ),
+    (
+        "opening a fence escalates to a full re-scan",
+        |window, _| {
+            // An edit that changes what the lines *below* it mean cannot take
+            // the one-line path.
+            let id = NoteId::from_relative("Case.md");
+            window.show_note(Some((&id, "``\nnot code yet\nstill prose\n")));
+
+            let editor = window.editor().expect("an editor");
+            let before = editor.full_rescans_for_test();
+            editor.insert_at_for_test(2, "`");
+            assert!(
+                editor.full_rescans_for_test() > before,
+                "opening a fence took the one-line path"
+            );
+
+            let text = editor.body();
+            assert_eq!(
+                editor.parsed().spans,
+                brain::model::markdown::parse(&text).spans,
+                "the lines below the fence were not re-scanned"
+            );
+        },
+    ),
+];
+
+/// Cases that need no window, kept here so they run on the GTK thread too.
+#[test]
+fn note_objects_project_a_note_without_reading_it_back() {
+    let id = NoteId::from_relative("Meetings/Standup.md");
+    let object = NoteObject::new(&id, "Notes from standup.");
+    assert_eq!(object.title(), "Standup");
+    assert_eq!(object.folder(), "Meetings");
+    assert_eq!(object.excerpt(), "Notes from standup.");
+    assert_eq!(object.note_id(), id);
+
+    let root = NoteObject::new(&NoteId::from_relative("Top.md"), "");
+    assert_eq!(root.folder(), "");
+}
+
+/// The editor's loading guard, which does not need a display.
+#[test]
+fn an_editor_type_exists_and_names_itself() {
+    // Constructing widgets needs GTK initialised, which `widgets` owns. This
+    // asserts only what can be known without it.
+    assert_eq!(
+        <Editor as gtk::glib::prelude::StaticType>::static_type().name(),
+        "BrainEditor"
+    );
+    assert_eq!(
+        <Sidebar as gtk::glib::prelude::StaticType>::static_type().name(),
+        "BrainSidebar"
+    );
+}

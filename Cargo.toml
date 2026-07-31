@@ -1,0 +1,39 @@
+[package]
+name = "brain"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "A Markdown notebook for the GNOME desktop"
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "brain"
+path = "src/main.rs"
+
+[lib]
+name = "brain"
+path = "src/lib.rs"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.11", features = ["v4_22"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_9"] }
+# Direct dependency purely to raise the API level above what gtk4 pulls in:
+# ApplicationCommandLine::print_literal is gated behind v2_80, and the vault
+# directory monitors want the v2_80 GFileMonitor signal shape.
+gio = { version = "0.22", features = ["v2_80"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Dates in frontmatter (created/updated) and timestamped attachment names.
+chrono = { version = "0.4", default-features = false, features = [
+    "std",
+    "clock",
+    "serde",
+] }
+# No Markdown crate: see DESIGN.md. The scanner must report which characters are
+# *syntax* so they can be hidden, in char offsets, which is not what a general
+# CommonMark library gives you. src/model/markdown/ is Stickies' scanner,
+# extended.
+
+[dev-dependencies]
+adw = { package = "libadwaita", version = "0.9", features = ["v1_9"] }
+tempfile = "3"

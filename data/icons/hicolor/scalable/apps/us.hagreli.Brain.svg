@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Brain. A page of notes with two linked ideas on it: the app is a notebook
+     whose distinguishing feature is the links between its pages. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="page" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#eceff4"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8ab4f8"/>
+      <stop offset="1" stop-color="#5b8def"/>
+    </linearGradient>
+  </defs>
+
+  <!-- The page -->
+  <rect x="20" y="12" width="88" height="104" rx="12" fill="url(#page)"/>
+  <rect x="20" y="12" width="88" height="104" rx="12" fill="none"
+        stroke="#c8cfdb" stroke-width="2"/>
+
+  <!-- The binding, which is what makes it a notebook rather than a sheet -->
+  <path d="M20 24 a12 12 0 0 1 12 -12 h6 v104 h-6 a12 12 0 0 1 -12 -12 z"
+        fill="url(#edge)"/>
+
+  <!-- Lines of writing -->
+  <g fill="#b7c0cd">
+    <rect x="50" y="30" width="44" height="6" rx="3"/>
+    <rect x="50" y="44" width="30" height="6" rx="3"/>
+  </g>
+
+  <!-- Two linked ideas: the graph the notes make -->
+  <g stroke="#5b8def" stroke-width="5" stroke-linecap="round" fill="none">
+    <path d="M58 74 L86 62"/>
+    <path d="M58 74 L84 94"/>
+  </g>
+  <g fill="#5b8def">
+    <circle cx="56" cy="76" r="9"/>
+    <circle cx="89" cy="60" r="7"/>
+    <circle cx="87" cy="96" r="7"/>
+  </g>
+</svg>

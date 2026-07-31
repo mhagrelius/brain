@@ -1,0 +1,38 @@
+/* Brain's stylesheet.
+ *
+ * Colours come from Adwaita's custom properties wherever the theme has a
+ * meaning for the thing being coloured, so light and dark both follow the
+ * system rather than being restated. Requires GTK >= 4.16 for var().
+ */
+
+/* The editor is the app. Give it room and a comfortable measure. */
+.editor {
+  font-size: 1.05rem;
+  line-height: 1.55;
+  background: transparent;
+}
+
+.editor text {
+  background: transparent;
+}
+
+/* A note in the sidebar list: title over a one-line excerpt. */
+.note-row-title {
+  font-weight: 600;
+}
+
+.note-row-excerpt {
+  font-size: 0.85rem;
+}
+
+/* The folder a note lives in, shown beside its title. */
+.note-row-folder {
+  font-size: 0.8rem;
+  opacity: 0.7;
+}
+
+/* Word count and similar, in the editor's footer. */
+.status-line {
+  font-size: 0.85rem;
+  padding: 2px 12px;
+}
