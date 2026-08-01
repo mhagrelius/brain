@@ -7,6 +7,37 @@ they are untouched; put the folder in git and you have history; open it in any
 other editor and it reads the same. Nothing Brain writes into a note is
 unreadable to `cat`.
 
+## Features
+
+- **Plain files.** A vault is a folder of `.md` files with optional YAML
+  frontmatter. No database, no lock-in, no proprietary metadata.
+- **One editing view.** Source is styled as you type — headings, emphasis,
+  code, quotes, lists, tasks, rules, tables — with syntax hidden outside the
+  construct the caret is in. `Ctrl+E` hides it everywhere and stops edits.
+- **Lists that continue themselves.** Enter repeats the indent and bullet, the
+  next number, or a fresh unticked checkbox; Enter on an empty item ends the
+  list.
+- **Wikilinks.** `[[` completes over titles and aliases, `Ctrl+Click` or
+  `Ctrl+Return` follows, a dead link offers to write the note, and renaming
+  repoints every link that pointed at it. A backlinks pane says what links here.
+- **Tags.** `#tag` inline and `tags:` in frontmatter, nested as `#project/brain`,
+  in a sidebar tree that filters the list.
+- **Folders.** The sidebar is the vault's own directory tree: drag to move notes
+  and whole folders, create, rename and delete from a row's menu, and sort by
+  name, last written or made.
+- **Search.** A sidebar entry filters as you type, `Ctrl+K` jumps to a note by
+  title, and `Ctrl+Shift+F` searches every note's text with the match in
+  context.
+- **Attachments.** Drop a file or paste an image and it is copied into
+  `attachments/` and embedded, drawn inline at its own shape.
+- **Formatting and properties.** `F10` opens a pane with the note's properties
+  and buttons for each construct, labelled with the syntax they write.
+- **It writes carefully.** Saves coalesce on a two-second tick and go out
+  tmp → fsync → rename; frontmatter keys Brain does not understand come back
+  byte for byte; edits made outside Brain are noticed and picked up.
+- **GNOME-native.** libadwaita throughout, light and dark, and a breakpoint that
+  turns the sidebar into an overlay on a narrow window.
+
 ## Install
 
 ```sh
