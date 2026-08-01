@@ -1,3 +1,4 @@
+pub mod bm25;
 pub mod config;
 pub mod frontmatter;
 pub mod index;
