@@ -521,6 +521,44 @@ const CASES: &[Case] = &[
         },
     ),
     (
+        "taking one emphasis off leaves the other in place",
+        |window, _| {
+            // `***text***` is one marker of three either side, shared by the
+            // bold and the italic. Unbolding used to take all three and remove
+            // both.
+            let id = NoteId::from_relative("A.md");
+            window.show_note(Some((&id, "make this bold please")));
+            let editor = window.editor().expect("an editor");
+            let buffer = editor.buffer_for_test();
+
+            buffer.select_range(&buffer.iter_at_offset(10), &buffer.iter_at_offset(14));
+            editor.apply_format(Format::Bold);
+            editor.apply_format(Format::Italic);
+            assert_eq!(editor.body(), "make this ***bold*** please");
+
+            editor.apply_format(Format::Bold);
+            assert_eq!(
+                editor.body(),
+                "make this *bold* please",
+                "unbolding took the italic with it"
+            );
+
+            // And the other way round, from the same starting point.
+            editor.apply_format(Format::Bold);
+            assert_eq!(editor.body(), "make this ***bold*** please");
+            editor.apply_format(Format::Italic);
+            assert_eq!(
+                editor.body(),
+                "make this **bold** please",
+                "unitalicising took the bold with it"
+            );
+
+            // The last one off leaves the words alone.
+            editor.apply_format(Format::Bold);
+            assert_eq!(editor.body(), "make this bold please");
+        },
+    ),
+    (
         "a block format toggles off when pressed twice",
         |window, _| {
             // Otherwise the buttons are one-way and quoting by accident is

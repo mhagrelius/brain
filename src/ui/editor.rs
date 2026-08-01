@@ -1002,12 +1002,30 @@ impl Editor {
         };
 
         let (span_start, span_end) = (span.start as i32, span.end as i32);
-        let opening_width = (opening.end - opening.start) as i32;
 
-        // The closing one first: deleting the opening one would shift it.
-        for marker in [closing, opening] {
-            let mut start = buffer.iter_at_offset(marker.start as i32);
-            let mut end = buffer.iter_at_offset(marker.end as i32);
+        // How much of each marker belongs to *this* format. `***both***` is one
+        // marker of three, and taking all of it off would remove the italic
+        // along with the bold.
+        let chars: Vec<char> = text.chars().collect();
+        let (before, after) = match format.edit() {
+            Edit::Wrap { before, after } => (before, after),
+            // Every format with a style wraps; this is unreachable.
+            _ => return false,
+        };
+        let opening_width = Self::owned_width(&chars[opening.start..opening.end], &before) as i32;
+        let closing_width = Self::owned_width(&chars[closing.start..closing.end], &after) as i32;
+
+        // From the inside out, so what is left is the delimiter of the style
+        // that stays: `***both***` unbolds to `*both*`, not `**both**` with a
+        // stray asterisk. And the closing one first, because deleting the
+        // opening one would shift it.
+        let deletions = [
+            (closing.start as i32, closing.start as i32 + closing_width),
+            (opening.end as i32 - opening_width, opening.end as i32),
+        ];
+        for (from, to) in deletions {
+            let mut start = buffer.iter_at_offset(from);
+            let mut end = buffer.iter_at_offset(to);
             buffer.delete(&mut start, &mut end);
         }
 
@@ -1020,6 +1038,25 @@ impl Editor {
             &buffer.iter_at_offset(end.clamp(0, buffer.char_count())),
         );
         true
+    }
+
+    /// How many characters of `marker` this format's delimiter owns.
+    ///
+    /// A run of one repeated character — `***`, `___`, `~~` — may be shared by
+    /// two styles at once, so a format takes only as many as it writes and
+    /// leaves the rest. Anything else comes off whole: a link's closing
+    /// `](target)` is as long as the target, and taking the six characters of
+    /// the literal `](url)` would leave the rest of it in the note.
+    fn owned_width(marker: &[char], delimiter: &str) -> usize {
+        let want = delimiter.chars().count();
+        let repeated = marker
+            .first()
+            .is_some_and(|first| marker.iter().all(|c| c == first));
+        if repeated && marker.len() > want && want > 0 {
+            want
+        } else {
+            marker.len()
+        }
     }
 
     /// The `**|**` case: a pair with nothing between it yet, which the scanner

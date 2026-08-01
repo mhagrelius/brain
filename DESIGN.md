@@ -291,9 +291,12 @@ Where the finished thing differs from this document, this is what happened.
   italicising something already bold writes exactly that, and without it the
   run parsed as bold wrapped round a stray asterisk. Both styles are reported
   over the same text, and each comes off independently — which is why an
-  unwrap matches the format's own characters beside the run rather than the
-  marker next to it, since one marker of three cannot say whether to remove
-  two characters or one.
+  unwrap removes as many characters as the format writes, taken from the
+  inside of the marker outwards, rather than the whole marker: one marker of
+  three cannot say whether two characters or one are being asked for, and
+  taking all three unbolded and unitalicised in one press. Markers that are
+  not a run of one repeated character still come off whole, since a link's
+  closing `](target)` is as long as its target.
 - **The right pane carries Details as well as Backlinks.** Asked for after
   the first install: something like LibreOffice's sidebar, saying what the note
   is and what can be done to it. The formatting half is the interesting part —
