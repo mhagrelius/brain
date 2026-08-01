@@ -20,7 +20,8 @@ use std::path::Path;
 use adw::prelude::*;
 use brain::model::markdown::{Format, Style};
 use brain::model::note::NoteId;
-use brain::ui::{BrainWindow, Editor, NoteObject, Sidebar};
+use brain::model::tree::Row;
+use brain::ui::{BrainWindow, Editor, RowObject, Sidebar};
 use gtk::glib;
 
 /// A one-pixel PNG, so an embed has a real file to resolve to.
@@ -116,19 +117,63 @@ const CASES: &[Case] = &[
         assert_eq!(window.editor_body().unwrap_or_default(), "");
     }),
     (
-        "the note list accepts notes and an empty vault",
+        "the note list accepts a tree, results and an empty vault",
         |window, _| {
-            let notes = vec![
-                (NoteId::from_relative("A.md"), "first".to_string()),
-                (NoteId::from_relative("Meetings/B.md"), String::new()),
-            ];
-            window.set_notes(&notes);
+            window.set_rows(&[
+                Row::Folder {
+                    path: "Meetings".to_string(),
+                    name: "Meetings".to_string(),
+                    depth: 0,
+                    notes: 1,
+                    expanded: true,
+                },
+                Row::Note {
+                    id: NoteId::from_relative("Meetings/B.md"),
+                    excerpt: String::new(),
+                    depth: 1,
+                },
+                Row::Note {
+                    id: NoteId::from_relative("A.md"),
+                    excerpt: "first".to_string(),
+                    depth: 0,
+                },
+            ]);
             window.select_note(Some(&NoteId::from_relative("A.md")));
             // Selecting a note that is not in the list clears the highlight rather
             // than leaving the previous one looking current.
             window.select_note(Some(&NoteId::from_relative("Gone.md")));
             window.select_note(None);
-            window.set_notes(&[]);
+
+            window.set_results(&[(NoteId::from_relative("A.md"), "first".to_string())]);
+            window.set_result_count(Some(1));
+            assert_eq!(window.sidebar_subtitle_for_test(), "1 match");
+            window.set_result_count(None);
+            assert_eq!(window.sidebar_subtitle_for_test(), "");
+
+            window.set_rows(&[]);
+        },
+    ),
+    (
+        "a folder row never takes the highlight meant for a note",
+        |window, _| {
+            // A folder and a note can share a path — `Meetings` and
+            // `Meetings.md` — and highlighting the folder would leave the open
+            // note looking closed.
+            window.set_rows(&[
+                Row::Folder {
+                    path: "Meetings".to_string(),
+                    name: "Meetings".to_string(),
+                    depth: 0,
+                    notes: 0,
+                    expanded: false,
+                },
+                Row::Note {
+                    id: NoteId::from_relative("Meetings.md"),
+                    excerpt: String::new(),
+                    depth: 0,
+                },
+            ]);
+            window.select_note(Some(&NoteId::from_relative("Meetings.md")));
         },
     ),
     ("the save banner shows and clears", |window, _| {
@@ -775,10 +820,29 @@ const CASES: &[Case] = &[
         },
     ),
     (
+        "the folder menu and the sort menu name actions the window has",
+        |window, _| {
+            // These are named in menu models built at popup time, so nothing
+            // else would notice one being renamed: a menu item pointing at an
+            // action that does not exist is permanently insensitive and silent.
+            for action in [
+                "new-note-in",
+                "new-folder",
+                "new-folder-in",
+                "rename-folder",
+                "delete-folder",
+                "sort",
+                "find",
+            ] {
+                assert!(window.has_action(action), "the window has no win.{action}");
+            }
+        },
+    ),
+    (
         "a note row's menu names actions the window has",
         |window, _| {
             let sidebar = Sidebar::new();
-            sidebar.set_notes(&[(NoteId::from_relative("A.md"), "first".to_string())]);
+            sidebar.set_results(&[(NoteId::from_relative("A.md"), "first".to_string())]);
 
             let mut child = sidebar.first_child();
             let menu = loop {
@@ -817,16 +881,32 @@ const CASES: &[Case] = &[
 
 /// Cases that need no window, kept here so they run on the GTK thread too.
 #[test]
-fn note_objects_project_a_note_without_reading_it_back() {
+fn row_objects_project_a_note_without_reading_it_back() {
     let id = NoteId::from_relative("Meetings/Standup.md");
-    let object = NoteObject::new(&id, "Notes from standup.");
-    assert_eq!(object.title(), "Standup");
-    assert_eq!(object.folder(), "Meetings");
-    assert_eq!(object.excerpt(), "Notes from standup.");
-    assert_eq!(object.note_id(), id);
 
-    let root = NoteObject::new(&NoteId::from_relative("Top.md"), "");
-    assert_eq!(root.folder(), "");
+    // In the tree the indent says which folder a note is in, so the row does
+    // not repeat it.
+    let in_tree = RowObject::note(&id, "Notes from standup.", 1);
+    assert_eq!(in_tree.title(), "Standup");
+    assert_eq!(in_tree.folder(), "");
+    assert_eq!(in_tree.depth(), 1);
+    assert_eq!(in_tree.excerpt(), "Notes from standup.");
+    assert_eq!(in_tree.note_id(), id);
+    assert!(!in_tree.is_folder());
+
+    // Flattened into results there is no indent, so it does.
+    let result = RowObject::result(&id, "a matching line");
+    assert_eq!(result.folder(), "Meetings");
+    assert_eq!(result.depth(), 0);
+    assert_eq!(
+        RowObject::result(&NoteId::from_relative("Top.md"), "").folder(),
+        ""
+    );
+
+    let folder = RowObject::for_folder("Meetings", "Meetings", 0, 3, true);
+    assert!(folder.is_folder());
+    assert_eq!(folder.count(), 3);
+    assert!(folder.expanded());
 }
 
 /// The editor's loading guard, which does not need a display.

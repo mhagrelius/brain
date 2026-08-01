@@ -19,6 +19,9 @@ const USED: &[&str] = &[
     "document-edit-symbolic",
     "view-reveal-symbolic",
     "tag-symbolic",
+    "view-sort-descending-symbolic",
+    "pan-end-symbolic",
+    "pan-down-symbolic",
     // Candidates the HIG names, checked so a swap is informed.
     "list-add-symbolic",
     "user-trash-symbolic",

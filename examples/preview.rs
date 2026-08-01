@@ -17,6 +17,7 @@ use adw::prelude::*;
 use gtk::glib;
 
 use brain::model::note::NoteId;
+use brain::model::tree::{self, Listed, Sort};
 use brain::model::vault::Vault;
 use brain::ui::{BacklinksPanel, BrainWindow, Editor, Hit, Palette, Sidebar, TagTree};
 
@@ -54,14 +55,39 @@ fn main() {
         .collect();
     listed.sort_by(|a, b| a.0.cmp(&b.0));
 
+    // Every folder open, since a preview of a collapsed tree says nothing
+    // about how a nested one reads.
+    let folders = vault.folders();
+    let for_tree: Vec<Listed> = listed
+        .iter()
+        .map(|(id, excerpt)| Listed::new(id.clone(), excerpt.clone()))
+        .collect();
+    let rows = tree::rows(
+        &for_tree,
+        &folders,
+        &folders.iter().cloned().collect(),
+        Sort::Name,
+    );
+
     let sidebar = Sidebar::new();
-    sidebar.set_notes(&listed);
+    sidebar.set_rows(&rows);
     sidebar.select(Some(&NoteId::from_relative("Rust ownership.md")));
     render(
         &sidebar,
         320,
         480,
         &format!("{out}/sidebar-{}.png", scheme(dark)),
+    );
+
+    // The same widget showing search results, which is a flat list with the
+    // folder spelled out — a different shape worth looking at.
+    let results = Sidebar::new();
+    results.set_results(&listed);
+    render(
+        &results,
+        320,
+        480,
+        &format!("{out}/results-{}.png", scheme(dark)),
     );
 
     // The editor, holding a note that uses every piece of syntax the scanner
@@ -133,7 +159,7 @@ fn main() {
     // window itself, because a bare X server has no window manager to map one.
     let window: BrainWindow = glib::Object::new();
     window.set_vault_root(Some(vault.root().to_path_buf()));
-    window.set_notes(&listed);
+    window.set_rows(&rows);
     window.set_tags(&index.tags());
     let opened = NoteId::from_relative("Rust ownership.md");
     let note = vault.read(&opened).expect("the seeded note");
@@ -165,7 +191,7 @@ fn main() {
 
     // The window at first start: a vault with nothing in it yet.
     let fresh: BrainWindow = glib::Object::new();
-    fresh.set_notes(&[]);
+    fresh.set_rows(&[]);
     fresh.set_tags(&[]);
     fresh.show_note(None);
     if let Some(content) = fresh.content() {
@@ -183,7 +209,7 @@ fn main() {
     // an offscreen render has no window to measure.
     let narrow: BrainWindow = glib::Object::new();
     narrow.set_vault_root(Some(vault.root().to_path_buf()));
-    narrow.set_notes(&listed);
+    narrow.set_rows(&rows);
     narrow.set_tags(&index.tags());
     narrow.show_note(Some((&opened, &note.to_text())));
     narrow.set_collapsed_for_test(true);
@@ -236,7 +262,7 @@ fn main() {
 
     // The empty sidebar, so the empty state is not the only thing untested.
     let empty = Sidebar::new();
-    empty.set_notes(&[]);
+    empty.set_rows(&[]);
     render(
         &empty,
         320,

@@ -112,6 +112,18 @@ fn seed(vault: &Path) {
     .expect("write");
 }
 
+/// The sidebar's rows as paths, folders marked with a trailing slash.
+fn shape(app: &BrainApplication) -> Vec<String> {
+    use brain::model::tree::Row;
+    app.sidebar_rows()
+        .iter()
+        .map(|row| match row {
+            Row::Folder { path, .. } => format!("{path}/"),
+            Row::Note { id, .. } => id.as_str().to_string(),
+        })
+        .collect()
+}
+
 /// The alert dialog currently presented over `window`, if any.
 fn find_alert_dialog(window: &brain::ui::BrainWindow) -> Option<adw::AlertDialog> {
     let mut found = None;
@@ -317,6 +329,228 @@ const STEPS: &[Step] = &[
                 all,
                 "a filter matching nothing must not leave an empty list with no way out"
             );
+        },
+    ),
+    (
+        "the sidebar tree hides a closed folder's notes and shows an open one's",
+        |app, _| {
+            // The seeded vault has Meetings/Standup.md, and nothing has opened
+            // that folder yet.
+            assert_eq!(
+                shape(app),
+                [
+                    "Meetings/",
+                    "Borrowing.md",
+                    "Ownership rules.md",
+                    "Rust ownership.md"
+                ],
+                "a folder that has never been opened must not spill its notes"
+            );
+
+            app.toggle_folder("Meetings");
+            assert_eq!(
+                shape(app),
+                [
+                    "Meetings/",
+                    "Meetings/Standup.md",
+                    "Borrowing.md",
+                    "Ownership rules.md",
+                    "Rust ownership.md"
+                ]
+            );
+            app.toggle_folder("Meetings");
+        },
+    ),
+    (
+        "a tag filter opens the folders holding what it matched",
+        |app, _| {
+            // Results behind a chevron look like no results at all.
+            app.filter_by_tag(Some("project/brain"));
+            assert_eq!(shape(app), ["Meetings/", "Meetings/Standup.md"]);
+            app.filter_by_tag(None);
+        },
+    ),
+    (
+        "opening a note inside a closed folder reveals it",
+        |app, _| {
+            // Otherwise following a link or a search result highlights a row
+            // nobody can see.
+            app.open_note(&NoteId::from_relative("Meetings/Standup.md"));
+            assert!(
+                shape(app).iter().any(|row| row == "Meetings/Standup.md"),
+                "the folder was left closed over the note that was just opened"
+            );
+        },
+    ),
+    (
+        "a new folder appears, opened, and a note goes into it",
+        |app, vault| {
+            // The "+" names no folder, so it makes one where a new note would
+            // go — beside whatever is open, which is Meetings/Standup.md.
+            app.create_folder_here("Scratch");
+            assert!(
+                vault.join("Meetings/Scratch").is_dir(),
+                "a folder from + must land where a note from + would"
+            );
+            app.delete_folder("Meetings/Scratch");
+
+            app.open_note(&NoteId::from_relative("Rust ownership.md"));
+            app.create_folder_here("Archive");
+            assert!(vault.join("Archive").is_dir());
+            assert!(shape(app).iter().any(|row| row == "Archive/"));
+
+            // Making a folder is choosing it, so the next note lands there
+            // rather than beside whatever was last open.
+            app.create_note("Old thoughts");
+            assert_eq!(
+                app.open_note_id(),
+                Some(NoteId::from_relative("Archive/Old thoughts.md"))
+            );
+            assert!(vault.join("Archive/Old thoughts.md").exists());
+        },
+    ),
+    (
+        "dragging a note onto a folder moves the file and keeps its links",
+        |app, vault| {
+            let id = NoteId::from_relative("Borrowing.md");
+            app.move_note(&id, "Archive");
+
+            assert!(!vault.join("Borrowing.md").exists());
+            assert!(vault.join("Archive/Borrowing.md").exists());
+            // Links resolve by title, and the title has not changed — so a move
+            // must leave every other note untouched.
+            assert!(read(vault, "Rust ownership.md").contains("[[Borrowing]]"));
+            assert!(
+                app.link_candidates("borrowing")
+                    .iter()
+                    .any(|c| c == "Borrowing"),
+                "the moved note stopped resolving"
+            );
+
+            // And back out to the root.
+            app.move_note(&NoteId::from_relative("Archive/Borrowing.md"), "");
+            assert!(vault.join("Borrowing.md").exists());
+        },
+    ),
+    (
+        "moving the open note carries the editor with it",
+        |app, vault| {
+            app.open_note(&NoteId::from_relative("Rust ownership.md"));
+            type_into_editor(app, "Typed just before being moved.\n");
+            app.move_note(&NoteId::from_relative("Rust ownership.md"), "Archive");
+
+            assert_eq!(
+                app.open_note_id(),
+                Some(NoteId::from_relative("Archive/Rust ownership.md"))
+            );
+            assert!(
+                read(vault, "Archive/Rust ownership.md").contains("Typed just before being moved."),
+                "the unsaved edit did not follow the file"
+            );
+            app.move_note(&NoteId::from_relative("Archive/Rust ownership.md"), "");
+        },
+    ),
+    (
+        "a folder moves with everything under it, and the open note follows",
+        |app, vault| {
+            app.open_note(&NoteId::from_relative("Archive/Old thoughts.md"));
+            app.move_dropped("brain-folder:Archive", "Meetings");
+
+            assert!(vault.join("Meetings/Archive/Old thoughts.md").exists());
+            assert!(!vault.join("Archive").exists());
+            assert_eq!(
+                app.open_note_id(),
+                Some(NoteId::from_relative("Meetings/Archive/Old thoughts.md")),
+                "the open note kept an id that no longer names a file"
+            );
+
+            app.move_dropped("brain-folder:Meetings/Archive", "");
+        },
+    ),
+    (
+        "a folder is not dropped inside itself and the vault is unharmed",
+        |app, vault| {
+            app.move_dropped("brain-folder:Meetings", "Meetings/Deeper");
+            assert!(vault.join("Meetings/Standup.md").exists());
+            assert!(!vault.join("Meetings/Deeper").exists());
+        },
+    ),
+    (
+        "a folder with notes in it is not deleted, an empty one is",
+        |app, vault| {
+            app.delete_folder("Meetings");
+            assert!(
+                vault.join("Meetings/Standup.md").exists(),
+                "deleting a folder must never take the notes with it"
+            );
+
+            // Empty it the only way Brain empties a folder — one note at a
+            // time — and then it goes.
+            app.open_note(&NoteId::from_relative("Archive/Old thoughts.md"));
+            app.delete_open_note();
+            app.delete_folder("Archive");
+            assert!(!vault.join("Archive").exists());
+        },
+    ),
+    (
+        "renaming a folder keeps the notes under the new name",
+        |app, vault| {
+            app.rename_folder("Meetings", "Standups");
+            assert!(vault.join("Standups/Standup.md").exists());
+            assert!(!vault.join("Meetings").exists());
+            app.rename_folder("Standups", "Meetings");
+        },
+    ),
+    (
+        "the sidebar search filters by title and by text and then lets go",
+        |app, _| {
+            let all = app.listed_notes().len();
+
+            app.set_query("borrow");
+            assert!(app.is_searching());
+            let titled = app.listed_notes();
+            assert_eq!(
+                titled.first().map(|(id, _)| id.as_str()),
+                Some("Borrowing.md"),
+                "a note named after the query must come first"
+            );
+
+            // A word that appears only in a body still finds its note, and the
+            // row says which line matched.
+            app.set_query("destructive");
+            let by_text = app.listed_notes();
+            let hit = by_text
+                .iter()
+                .find(|(id, _)| id.as_str() == "Rust ownership.md")
+                .expect("the note whose text says it");
+            assert!(hit.1.contains("destructive"), "{:?}", hit.1);
+
+            app.set_query("");
+            assert!(!app.is_searching());
+            assert_eq!(app.listed_notes().len(), all);
+        },
+    ),
+    (
+        "sorting by modification puts the note just written first",
+        |app, _| {
+            use brain::model::tree::Sort;
+
+            app.open_note(&NoteId::from_relative("Borrowing.md"));
+            type_into_editor(app, "Touched last.\n");
+            app.flush_open_note();
+            app.save_now();
+
+            app.set_sort(Sort::Modified);
+            // The notes at the vault root, which is where the sort is visible
+            // without depending on which folders happen to be open.
+            let first = shape(app)
+                .into_iter()
+                .find(|row| !row.contains('/'))
+                .expect("a note row");
+            assert_eq!(first, "Borrowing.md");
+
+            app.set_sort(Sort::Name);
+            assert_eq!(app.sort(), Sort::Name);
         },
     ),
     ("dropping a file attaches it and embeds it", |app, vault| {

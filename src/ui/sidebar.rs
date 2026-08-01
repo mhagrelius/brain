@@ -1,14 +1,21 @@
-//! The list of notes.
+//! The folder tree of notes.
 //!
-//! A `ListView` over a `gio::ListStore` of [`NoteObject`], with a
-//! `SignalListItemFactory`. Rows recycle, so the factory's `bind` must set
-//! every field it ever sets — a row arriving with the previous note's excerpt
-//! still on it is the classic bug here.
+//! A `ListView` over a `gio::ListStore` of [`RowObject`], with a
+//! `SignalListItemFactory`. The tree is flattened into rows by
+//! [`crate::model::tree::rows`] before it gets here, so this widget never walks
+//! a hierarchy — it draws a list where each row knows its own depth. That is
+//! what keeps the expansion logic testable without a display, and what lets the
+//! same widget show flat search results by being handed different rows.
 //!
-//! The sidebar emits which note was chosen and never opens one itself. The
-//! row menu is the same `win.` actions as the main menu, which act on the open
-//! note — so a secondary click chooses the note first and the menu then has
-//! one meaning, whichever way it was reached.
+//! Rows recycle, so the factory's `bind` must set every field it ever sets —
+//! a row arriving with the previous note's excerpt still on it, or a note
+//! wearing the chevron of the folder that was there before, is the classic bug
+//! here.
+//!
+//! The sidebar emits what the user did and changes nothing itself: no file is
+//! moved, no folder is created, no note is opened. A drag that ends on a folder
+//! is a `moved` signal, and the application decides whether that is a rename it
+//! is willing to do.
 
 use std::cell::RefCell;
 use std::sync::OnceLock;
@@ -19,7 +26,19 @@ use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 
 use crate::model::note::NoteId;
-use crate::ui::NoteObject;
+use crate::model::tree::Row;
+use crate::ui::RowObject;
+
+/// How far one level of nesting indents, in pixels.
+const INDENT: i32 = 16;
+
+/// What is being dragged, as it travels on the clipboard.
+///
+/// One string with a prefix rather than two content types: a drop target that
+/// accepts both would have to ask which it got anyway, and the prefix is
+/// readable in a debugger.
+const NOTE_PREFIX: &str = "brain-note:";
+const FOLDER_PREFIX: &str = "brain-folder:";
 
 mod imp {
     use super::*;
@@ -29,9 +48,11 @@ mod imp {
         pub store: RefCell<Option<gtk::gio::ListStore>>,
         pub selection: RefCell<Option<gtk::SingleSelection>>,
         pub list: RefCell<Option<gtk::ListView>>,
-        pub empty: RefCell<Option<adw::StatusPage>>,
         pub stack: RefCell<Option<gtk::Stack>>,
         pub menu: RefCell<Option<gtk::PopoverMenu>>,
+        /// The note menu, kept so the popover can be put back to it after a
+        /// folder row has borrowed the popover for its own.
+        pub note_menu: RefCell<Option<gtk::gio::Menu>>,
         /// Set while the selection is being restored in code, so the handler
         /// does not report it as the user choosing a note and reload the
         /// editor underneath them.
@@ -64,9 +85,22 @@ mod imp {
         fn signals() -> &'static [Signal] {
             static SIGNALS: OnceLock<Vec<Signal>> = OnceLock::new();
             SIGNALS.get_or_init(|| {
-                vec![Signal::builder("note-chosen")
-                    .param_types([String::static_type()])
-                    .build()]
+                vec![
+                    Signal::builder("note-chosen")
+                        .param_types([String::static_type()])
+                        .build(),
+                    // A folder was activated: open or close it, and treat it as
+                    // where the next new note goes.
+                    Signal::builder("folder-activated")
+                        .param_types([String::static_type()])
+                        .build(),
+                    // A note or folder was dragged onto a folder. The payload
+                    // carries which, and the second argument is the destination
+                    // folder — empty for the vault root.
+                    Signal::builder("moved")
+                        .param_types([String::static_type(), String::static_type()])
+                        .build(),
+                ]
             })
         }
     }
@@ -86,13 +120,138 @@ impl Default for Sidebar {
     }
 }
 
+/// The widgets of one recycled row, found once rather than at every access.
+struct RowWidgets {
+    row: gtk::Box,
+    chevron: gtk::Image,
+    title: gtk::Label,
+    folder: gtk::Label,
+    excerpt: gtk::Label,
+    count: gtk::Label,
+}
+
+impl RowWidgets {
+    fn build() -> Self {
+        let chevron = gtk::Image::from_icon_name("pan-end-symbolic");
+        chevron.set_visible(false);
+
+        let title = gtk::Label::builder()
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        title.add_css_class("note-row-title");
+
+        let folder = gtk::Label::builder()
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .build();
+        folder.add_css_class("note-row-folder");
+        folder.add_css_class("dimmed");
+
+        let heading = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        heading.append(&title);
+        heading.append(&folder);
+
+        let excerpt = gtk::Label::builder()
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        excerpt.add_css_class("note-row-excerpt");
+        excerpt.add_css_class("dimmed");
+
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .hexpand(true)
+            .build();
+        content.append(&heading);
+        content.append(&excerpt);
+
+        let count = gtk::Label::new(None);
+        count.add_css_class("dimmed");
+        count.add_css_class("numeric");
+        count.set_visible(false);
+
+        let row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .margin_top(8)
+            .margin_bottom(8)
+            .margin_start(6)
+            .margin_end(6)
+            .build();
+        row.append(&chevron);
+        row.append(&content);
+        row.append(&count);
+
+        Self {
+            row,
+            chevron,
+            title,
+            folder,
+            excerpt,
+            count,
+        }
+    }
+
+    /// Find the widgets again on a recycled row. The order they were appended
+    /// in is the contract, and it is only written down here.
+    fn of(row: &gtk::Box) -> Option<Self> {
+        let chevron = row.first_child()?.downcast::<gtk::Image>().ok()?;
+        let content = chevron.next_sibling()?.downcast::<gtk::Box>().ok()?;
+        let count = content.next_sibling()?.downcast::<gtk::Label>().ok()?;
+        let heading = content.first_child()?.downcast::<gtk::Box>().ok()?;
+        let excerpt = heading.next_sibling()?.downcast::<gtk::Label>().ok()?;
+        let title = heading.first_child()?.downcast::<gtk::Label>().ok()?;
+        let folder = title.next_sibling()?.downcast::<gtk::Label>().ok()?;
+        Some(Self {
+            row: row.clone(),
+            chevron,
+            title,
+            folder,
+            excerpt,
+            count,
+        })
+    }
+
+    fn bind(&self, item: &RowObject) {
+        let depth = item.depth() as i32;
+        self.row.set_margin_start(6 + depth * INDENT);
+        self.title.set_text(&item.title());
+
+        let folder = item.folder();
+        self.folder.set_text(&folder);
+        self.folder.set_visible(!folder.is_empty());
+
+        let excerpt = item.excerpt();
+        self.excerpt.set_text(&excerpt);
+        self.excerpt.set_visible(!excerpt.is_empty());
+
+        if item.is_folder() {
+            self.chevron.set_visible(true);
+            self.chevron.set_icon_name(Some(if item.expanded() {
+                "pan-down-symbolic"
+            } else {
+                "pan-end-symbolic"
+            }));
+            self.count.set_text(&item.count().to_string());
+            self.count.set_visible(true);
+            self.row.add_css_class("folder-row");
+        } else {
+            self.chevron.set_visible(false);
+            self.count.set_visible(false);
+            self.row.remove_css_class("folder-row");
+        }
+    }
+}
+
 impl Sidebar {
     pub fn new() -> Self {
         glib::Object::new()
     }
 
     fn build(&self) {
-        let store = gtk::gio::ListStore::new::<NoteObject>();
+        let store = gtk::gio::ListStore::new::<RowObject>();
         let selection = gtk::SingleSelection::builder()
             .model(&store)
             .autoselect(false)
@@ -107,81 +266,16 @@ impl Sidebar {
                 let item = item
                     .downcast_ref::<gtk::ListItem>()
                     .expect("list items are ListItems");
+                let widgets = RowWidgets::build();
 
-                let title = gtk::Label::builder()
-                    .xalign(0.0)
-                    .ellipsize(gtk::pango::EllipsizeMode::End)
-                    .build();
-                title.add_css_class("note-row-title");
+                // Every controller is set up once per recycled row and reads
+                // the row off the `ListItem` when it fires, so it follows
+                // whichever note or folder the row currently holds.
+                sidebar.add_row_menu(item, &widgets.row);
+                sidebar.add_drag_source(item, &widgets.row);
+                sidebar.add_drop_target(item, &widgets.row);
 
-                let folder = gtk::Label::builder()
-                    .xalign(0.0)
-                    .ellipsize(gtk::pango::EllipsizeMode::Middle)
-                    .build();
-                folder.add_css_class("note-row-folder");
-                folder.add_css_class("dimmed");
-
-                let heading = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-                heading.append(&title);
-                heading.append(&folder);
-
-                let excerpt = gtk::Label::builder()
-                    .xalign(0.0)
-                    .ellipsize(gtk::pango::EllipsizeMode::End)
-                    .build();
-                excerpt.add_css_class("note-row-excerpt");
-                excerpt.add_css_class("dimmed");
-
-                let row = gtk::Box::builder()
-                    .orientation(gtk::Orientation::Vertical)
-                    .spacing(2)
-                    .margin_top(8)
-                    .margin_bottom(8)
-                    .margin_start(6)
-                    .margin_end(6)
-                    .build();
-                row.append(&heading);
-                row.append(&excerpt);
-
-                // The gesture is set up once per recycled row and reads the
-                // note off the `ListItem` when it fires, so it follows
-                // whichever note the row currently holds.
-                let secondary = gtk::GestureClick::builder()
-                    .button(gtk::gdk::BUTTON_SECONDARY)
-                    .build();
-                secondary.connect_pressed(clone!(
-                    #[weak]
-                    sidebar,
-                    #[weak]
-                    item,
-                    move |gesture, _, x, y| {
-                        gesture.set_state(gtk::EventSequenceState::Claimed);
-                        let Some(widget) = gesture.widget() else {
-                            return;
-                        };
-                        sidebar.open_row_menu(&item, &widget, x, y);
-                    }
-                ));
-                row.add_controller(secondary);
-
-                // Touch: the same menu, from a press and hold.
-                let hold = gtk::GestureLongPress::builder().touch_only(true).build();
-                hold.connect_pressed(clone!(
-                    #[weak]
-                    sidebar,
-                    #[weak]
-                    item,
-                    move |gesture, x, y| {
-                        gesture.set_state(gtk::EventSequenceState::Claimed);
-                        let Some(widget) = gesture.widget() else {
-                            return;
-                        };
-                        sidebar.open_row_menu(&item, &widget, x, y);
-                    }
-                ));
-                row.add_controller(hold);
-
-                item.set_child(Some(&row));
+                item.set_child(Some(&widgets.row));
             }
         ));
 
@@ -189,33 +283,15 @@ impl Sidebar {
             let item = item
                 .downcast_ref::<gtk::ListItem>()
                 .expect("list items are ListItems");
-            let Some(note) = item.item().and_downcast::<NoteObject>() else {
+            let (Some(object), Some(row)) = (
+                item.item().and_downcast::<RowObject>(),
+                item.child().and_downcast::<gtk::Box>(),
+            ) else {
                 return;
             };
-            let Some(row) = item.child().and_downcast::<gtk::Box>() else {
-                return;
-            };
-            let Some(heading) = row.first_child().and_downcast::<gtk::Box>() else {
-                return;
-            };
-            let Some(title) = heading.first_child().and_downcast::<gtk::Label>() else {
-                return;
-            };
-            let Some(folder) = title.next_sibling().and_downcast::<gtk::Label>() else {
-                return;
-            };
-            let Some(excerpt) = heading.next_sibling().and_downcast::<gtk::Label>() else {
-                return;
-            };
-
-            // Rows recycle, so every field is set on every bind — including the
-            // empty cases, or a row shows the previous note's folder.
-            title.set_text(&note.title());
-            folder.set_text(&note.folder());
-            folder.set_visible(!note.folder().is_empty());
-            let text = note.excerpt();
-            excerpt.set_text(&text);
-            excerpt.set_visible(!text.is_empty());
+            if let Some(widgets) = RowWidgets::of(&row) {
+                widgets.bind(&object);
+            }
         });
 
         let list = gtk::ListView::builder()
@@ -229,14 +305,14 @@ impl Sidebar {
             #[weak(rename_to = sidebar)]
             self,
             move |list, position| {
-                let Some(note) = list
+                let Some(object) = list
                     .model()
                     .and_then(|model| model.item(position))
-                    .and_downcast::<NoteObject>()
+                    .and_downcast::<RowObject>()
                 else {
                     return;
                 };
-                sidebar.emit_by_name::<()>("note-chosen", &[&note.id()]);
+                sidebar.activate_row(&object);
             }
         ));
 
@@ -273,6 +349,25 @@ impl Sidebar {
             .child(&list)
             .build();
 
+        // Dropping in the space below the rows means the vault root. The row
+        // targets take everything that lands on a row, so this only ever sees
+        // a drop that missed.
+        let root_drop = gtk::DropTarget::new(String::static_type(), gtk::gdk::DragAction::MOVE);
+        root_drop.connect_drop(clone!(
+            #[weak(rename_to = sidebar)]
+            self,
+            #[upgrade_or]
+            false,
+            move |_, value, _, _| {
+                let Ok(payload) = value.get::<String>() else {
+                    return false;
+                };
+                sidebar.emit_by_name::<()>("moved", &[&payload, &String::new()]);
+                true
+            }
+        ));
+        scroller.add_controller(root_drop);
+
         // No button and no icon here. The + directly above this is one
         // affordance for writing a note and the content pane's button is
         // another; a third, in a 300px column, is clutter rather than help.
@@ -282,18 +377,26 @@ impl Sidebar {
             .build();
         empty.add_css_class("compact");
 
+        let no_results = adw::StatusPage::builder()
+            .icon_name("system-search-symbolic")
+            .title("No Matches")
+            .description("No note has that in its title or its text.")
+            .build();
+        no_results.add_css_class("compact");
+
         let stack = gtk::Stack::new();
         stack.add_named(&scroller, Some("list"));
         stack.add_named(&empty, Some("empty"));
+        stack.add_named(&no_results, Some("no-results"));
         stack.set_parent(self);
         self.set_vexpand(true);
 
         // The actions live on the window, and this popover is inside it, so
         // `win.` resolves without the sidebar knowing what they do.
-        let model = gtk::gio::Menu::new();
-        model.append(Some("_Rename…"), Some("win.rename-note"));
-        model.append(Some("_Delete…"), Some("win.delete-note"));
-        let menu = gtk::PopoverMenu::from_model(Some(&model));
+        let note_menu = gtk::gio::Menu::new();
+        note_menu.append(Some("_Rename…"), Some("win.rename-note"));
+        note_menu.append(Some("_Delete…"), Some("win.delete-note"));
+        let menu = gtk::PopoverMenu::from_model(Some(&note_menu));
         menu.set_has_arrow(false);
         menu.set_halign(gtk::Align::Start);
         menu.set_parent(self);
@@ -301,17 +404,156 @@ impl Sidebar {
         self.imp().store.replace(Some(store));
         self.imp().selection.replace(Some(selection));
         self.imp().list.replace(Some(list));
-        self.imp().empty.replace(Some(empty));
         self.imp().stack.replace(Some(stack));
         self.imp().menu.replace(Some(menu));
+        self.imp().note_menu.replace(Some(note_menu));
     }
 
-    /// Choose the row's note, then show the menu at the pointer.
+    /// Report what was activated. A folder opens or closes; a note is opened.
+    fn activate_row(&self, object: &RowObject) {
+        if object.is_folder() {
+            self.emit_by_name::<()>("folder-activated", &[&object.id()]);
+        } else {
+            self.emit_by_name::<()>("note-chosen", &[&object.id()]);
+        }
+    }
+
+    // ---- dragging ----
+
+    fn add_drag_source(&self, item: &gtk::ListItem, row: &gtk::Box) {
+        let source = gtk::DragSource::builder()
+            .actions(gtk::gdk::DragAction::MOVE)
+            .build();
+        source.connect_prepare(clone!(
+            #[weak]
+            item,
+            #[upgrade_or]
+            None,
+            move |_, _, _| {
+                let object = item.item().and_downcast::<RowObject>()?;
+                let payload = payload_of(&object);
+                Some(gtk::gdk::ContentProvider::for_value(&payload.to_value()))
+            }
+        ));
+        // The row itself is the drag icon, so what is being moved is never in
+        // doubt while it is in the air.
+        source.connect_drag_begin(clone!(
+            #[weak]
+            row,
+            move |source, _| {
+                let paintable = gtk::WidgetPaintable::new(Some(&row));
+                source.set_icon(Some(&paintable), 0, 0);
+            }
+        ));
+        row.add_controller(source);
+    }
+
+    fn add_drop_target(&self, item: &gtk::ListItem, row: &gtk::Box) {
+        let target = gtk::DropTarget::new(String::static_type(), gtk::gdk::DragAction::MOVE);
+
+        target.connect_enter(clone!(
+            #[weak]
+            row,
+            #[upgrade_or]
+            gtk::gdk::DragAction::empty(),
+            move |_, _, _| {
+                row.add_css_class("drop-into");
+                gtk::gdk::DragAction::MOVE
+            }
+        ));
+        target.connect_leave(clone!(
+            #[weak]
+            row,
+            move |_| row.remove_css_class("drop-into")
+        ));
+
+        target.connect_drop(clone!(
+            #[weak(rename_to = sidebar)]
+            self,
+            #[weak]
+            item,
+            #[weak]
+            row,
+            #[upgrade_or]
+            false,
+            move |_, value, _, _| {
+                row.remove_css_class("drop-into");
+                let (Ok(payload), Some(object)) = (
+                    value.get::<String>(),
+                    item.item().and_downcast::<RowObject>(),
+                ) else {
+                    return false;
+                };
+                // Dropping on a note means the folder that note is in, which is
+                // what aiming at a list of siblings looks like it should do.
+                let destination = if object.is_folder() {
+                    object.id()
+                } else {
+                    object.note_id().folder().unwrap_or("").to_string()
+                };
+                if payload == payload_of(&object) {
+                    return false; // dropped on itself
+                }
+                sidebar.emit_by_name::<()>("moved", &[&payload, &destination]);
+                true
+            }
+        ));
+
+        row.add_controller(target);
+    }
+
+    // ---- menus ----
+
+    fn add_row_menu(&self, item: &gtk::ListItem, row: &gtk::Box) {
+        let secondary = gtk::GestureClick::builder()
+            .button(gtk::gdk::BUTTON_SECONDARY)
+            .build();
+        secondary.connect_pressed(clone!(
+            #[weak(rename_to = sidebar)]
+            self,
+            #[weak]
+            item,
+            move |gesture, _, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let Some(widget) = gesture.widget() else {
+                    return;
+                };
+                sidebar.open_row_menu(&item, &widget, x, y);
+            }
+        ));
+        row.add_controller(secondary);
+
+        // Touch: the same menu, from a press and hold.
+        let hold = gtk::GestureLongPress::builder().touch_only(true).build();
+        hold.connect_pressed(clone!(
+            #[weak(rename_to = sidebar)]
+            self,
+            #[weak]
+            item,
+            move |gesture, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                let Some(widget) = gesture.widget() else {
+                    return;
+                };
+                sidebar.open_row_menu(&item, &widget, x, y);
+            }
+        ));
+        row.add_controller(hold);
+    }
+
+    /// Choose the row, then show its menu at the pointer.
     fn open_row_menu(&self, item: &gtk::ListItem, row: &gtk::Widget, x: f64, y: f64) {
-        let Some(note) = item.item().and_downcast::<NoteObject>() else {
+        let Some(object) = item.item().and_downcast::<RowObject>() else {
             return;
         };
-        self.emit_by_name::<()>("note-chosen", &[&note.id()]);
+        // A secondary click chooses the row first, so the menu has one meaning
+        // whichever way it was reached. A folder is not opened by it, though —
+        // asking for a folder's menu is not asking to collapse it.
+        if !object.is_folder() {
+            self.emit_by_name::<()>("note-chosen", &[&object.id()]);
+        }
+        self.set_menu_for(&object);
+
         let Some(point) = row.compute_point(self, &gtk::graphene::Point::new(x as f32, y as f32))
         else {
             return;
@@ -325,8 +567,11 @@ impl Sidebar {
     }
 
     /// Show the menu against a focused row, for the keyboard path. The row is
-    /// already the chosen note — focus follows selection here.
+    /// already the chosen one — focus follows selection here.
     fn open_focused_menu(&self, row: &gtk::Widget) {
+        if let Some(object) = self.selected_object() {
+            self.set_menu_for(&object);
+        }
         let Some(bounds) = row.compute_bounds(self) else {
             return;
         };
@@ -338,6 +583,49 @@ impl Sidebar {
         ));
     }
 
+    /// Put the right menu on the popover.
+    ///
+    /// A folder's items carry the folder as their action target, so the window
+    /// acts on the folder that was clicked rather than on whatever happens to
+    /// be selected — a menu that acts on something else is worse than no menu.
+    fn set_menu_for(&self, object: &RowObject) {
+        let Some(menu) = self.imp().menu.borrow().clone() else {
+            return;
+        };
+        if !object.is_folder() {
+            if let Some(model) = self.imp().note_menu.borrow().as_ref() {
+                menu.set_menu_model(Some(model));
+            }
+            return;
+        }
+
+        let path = object.id().to_variant();
+        let model = gtk::gio::Menu::new();
+        let create = gtk::gio::Menu::new();
+        for (label, action) in [
+            ("_New Note Here", "win.new-note-in"),
+            ("New _Folder Here…", "win.new-folder-in"),
+        ] {
+            let item = gtk::gio::MenuItem::new(Some(label), None);
+            item.set_action_and_target_value(Some(action), Some(&path));
+            create.append_item(&item);
+        }
+        model.append_section(None, &create);
+
+        let edit = gtk::gio::Menu::new();
+        for (label, action) in [
+            ("_Rename Folder…", "win.rename-folder"),
+            ("_Delete Folder…", "win.delete-folder"),
+        ] {
+            let item = gtk::gio::MenuItem::new(Some(label), None);
+            item.set_action_and_target_value(Some(action), Some(&path));
+            edit.append_item(&item);
+        }
+        model.append_section(None, &edit);
+
+        menu.set_menu_model(Some(&model));
+    }
+
     fn popup_menu(&self, at: gtk::gdk::Rectangle) {
         let Some(menu) = self.imp().menu.borrow().clone() else {
             return;
@@ -346,29 +634,50 @@ impl Sidebar {
         menu.popup();
     }
 
-    /// Replace the whole list.
+    fn selected_object(&self) -> Option<RowObject> {
+        let selection = self.imp().selection.borrow().clone()?;
+        selection.selected_item().and_downcast::<RowObject>()
+    }
+
+    // ---- what the window puts in it ----
+
+    /// Replace the whole list with a tree.
     ///
     /// Rebuilding rather than diffing: a personal vault is thousands of rows at
     /// most, `ListView` only realises the visible ones, and a diff that is
     /// subtly wrong shows the user a note that is not there.
-    pub fn set_notes(&self, notes: &[(NoteId, String)]) {
+    pub fn set_rows(&self, rows: &[Row]) {
+        let objects: Vec<RowObject> = rows.iter().map(RowObject::from_row).collect();
+        self.replace(&objects, "empty");
+    }
+
+    /// Replace the whole list with search results: no tree, no indent, and the
+    /// folder spelled out on every row.
+    pub fn set_results(&self, results: &[(NoteId, String)]) {
+        let objects: Vec<RowObject> = results
+            .iter()
+            .map(|(id, excerpt)| RowObject::result(id, excerpt))
+            .collect();
+        self.replace(&objects, "no-results");
+    }
+
+    fn replace(&self, objects: &[RowObject], when_empty: &str) {
         let imp = self.imp();
         let Some(store) = imp.store.borrow().clone() else {
             return;
         };
 
-        let objects: Vec<NoteObject> = notes
-            .iter()
-            .map(|(id, excerpt)| NoteObject::new(id, excerpt))
-            .collect();
-
         imp.selecting.set(true);
         store.remove_all();
-        store.extend_from_slice(&objects);
+        store.extend_from_slice(objects);
         imp.selecting.set(false);
 
         if let Some(stack) = imp.stack.borrow().as_ref() {
-            stack.set_visible_child_name(if objects.is_empty() { "empty" } else { "list" });
+            stack.set_visible_child_name(if objects.is_empty() {
+                when_empty
+            } else {
+                "list"
+            });
         }
     }
 
@@ -387,8 +696,8 @@ impl Sidebar {
                 let found = (0..store.n_items()).find(|index| {
                     store
                         .item(*index)
-                        .and_downcast::<NoteObject>()
-                        .is_some_and(|note| note.id() == id.as_str())
+                        .and_downcast::<RowObject>()
+                        .is_some_and(|row| !row.is_folder() && row.id() == id.as_str())
                 });
                 match found {
                     Some(index) => selection.set_selected(index),
@@ -399,4 +708,51 @@ impl Sidebar {
         }
         imp.selecting.set(false);
     }
+
+    /// The rows as they stand, for tests.
+    pub fn row_ids_for_test(&self) -> Vec<String> {
+        let Some(store) = self.imp().store.borrow().clone() else {
+            return Vec::new();
+        };
+        (0..store.n_items())
+            .filter_map(|index| store.item(index).and_downcast::<RowObject>())
+            .map(|row| {
+                if row.is_folder() {
+                    format!("{}/", row.id())
+                } else {
+                    row.id()
+                }
+            })
+            .collect()
+    }
+
+    /// Drive a drop the way the drag would, for tests.
+    pub fn drop_for_test(&self, payload: &str, destination: &str) {
+        self.emit_by_name::<()>("moved", &[&payload.to_string(), &destination.to_string()]);
+    }
+}
+
+fn payload_of(object: &RowObject) -> String {
+    if object.is_folder() {
+        format!("{FOLDER_PREFIX}{}", object.id())
+    } else {
+        format!("{NOTE_PREFIX}{}", object.id())
+    }
+}
+
+/// What a drop payload refers to, or `None` if it came from outside Brain.
+pub fn dragged(payload: &str) -> Option<Dragged> {
+    if let Some(id) = payload.strip_prefix(NOTE_PREFIX) {
+        return Some(Dragged::Note(NoteId::from_relative(id)));
+    }
+    payload
+        .strip_prefix(FOLDER_PREFIX)
+        .map(|path| Dragged::Folder(path.to_string()))
+}
+
+/// What was dragged onto a folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dragged {
+    Note(NoteId),
+    Folder(String),
 }

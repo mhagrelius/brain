@@ -117,12 +117,37 @@ link in the vault, as one undoable action.
 sidebar. Nested tags (`#project/brain`) form a tree. Clicking a tag filters the
 note list to it. Tags are never stored anywhere but in the notes themselves.
 
+### Folders
+
+The sidebar is the vault's directory tree. A folder row exists because a
+directory does — including an empty one, since the folder you just made is the
+folder you go looking for — and a note sits under it because its path says so.
+Nothing about the tree is stored: expansion is view state in the config, and
+order comes from a sort (name, last written, made), never from a manual
+arrangement. Manual ordering would need a file of positions that is a second
+source of truth about the vault, drifting the moment anything touches the notes
+from outside, and folders that reshuffle by date are folders you cannot learn —
+so folders stay alphabetical whatever the notes are sorted by.
+
+Drag a note onto a folder and it moves. That is one `fs::rename` and nothing
+else: links resolve by title, the title has not changed, so no other note is
+touched. Dragging a folder moves the whole subtree in one rename, and the index
+is rebuilt rather than patched, because every id beneath it changes at once.
+A folder is deleted only when empty — the file manager is a better place to
+mean "and everything in it".
+
 ### Search
 
-`Ctrl+K` is quick open: fuzzy over titles, aliases and paths, ranked, arrow keys
-and Enter. `Ctrl+Shift+F` is full text: substring and word matching over the
-in-memory text index, results grouped by note with a snippet per hit and the
-match highlighted.
+Search is in the sidebar, always visible, because past a few hundred notes
+filtering the list *is* how the list is read. Typing filters to titles first
+and then to text, each result carrying the line that matched. `Ctrl+F` focuses
+it, Enter opens the top result, Escape gives the tree back.
+
+The palette stays for going somewhere without leaving the keyboard. `Ctrl+K` is
+quick open: fuzzy over titles, aliases and paths, ranked, arrow keys and Enter.
+`Ctrl+Shift+F` is full text: substring and word matching over the in-memory
+text index, results grouped by note with a snippet per hit and the match
+highlighted.
 
 ### Attachments
 
@@ -158,11 +183,12 @@ src/
     vault.rs                 the folder: scan, read, atomic write, rename
     index.rs                 titles, aliases, links, backlinks, tags, text
     search.rs                fuzzy title match and full-text query
+    tree.rs                  folders and notes flattened into sidebar rows
     config.rs                the one thing outside the vault: which vault
   ui/
     application.rs           owns the vault and index; the only mutator
     window.rs                split views, breakpoint, view stack
-    sidebar.rs               note tree / tag tree switcher
+    sidebar.rs               folder tree / search results, drag and drop
     editor.rs                the TextView, tags, keybindings, autosave tick
     highlight.rs             spans → TextTags applied to the buffer
     link_popover.rs          [[ completion
@@ -264,6 +290,8 @@ Icons, `.desktop`, metainfo, and cargo+bash packaging scripts follow Stickies.
 7. ~~Search: `Ctrl+K` palette, `Ctrl+Shift+F` full text with snippets.~~
 8. ~~External change watching, packaging.~~ (The cache was measured and
    dropped.)
+9. ~~The folder tree: drag to move notes and folders, folder create/rename/
+   delete, a sort, and search in the sidebar rather than only in a dialog.~~
 
 ## Built differently, or not built
 
@@ -389,6 +417,28 @@ Where the finished thing differs from this document, this is what happened.
 - **Ctrl+Click on a `#tag` in the editor filters by it**, which the design
   did not ask for. It costs one branch beside the link handler and is the
   obvious thing to try once tags are styled as chips.
+- **The sidebar is a flat list of rows, not a tree widget.** `TreeListModel`
+  would put the hierarchy inside GTK, where the expansion rules are neither
+  testable without a display nor readable beside the vault they describe.
+  Instead `model/tree.rs` takes the notes, the folders on disk and the set of
+  open folders and returns rows carrying their own depth; the widget draws an
+  indent and a chevron and knows nothing about nesting. The whole of "what does
+  the sidebar look like" is then a pure function with a table of cases.
+- **A drag carries a prefixed string, not a custom content type.** `brain-note:`
+  and `brain-folder:` on one `String` payload: a drop target registered for
+  both types would have to ask which it received anyway, and a payload from
+  another application is then something to ignore rather than something to
+  misread as a path.
+- **The sidebar stats the vault only when a time sort is on.** Sorting by name
+  is the default and the list is rebuilt on every save, so reading `mtime` for
+  every note each time would be work for a field nobody asked about. Creation
+  time falls back to modification time, because not every filesystem keeps a
+  birth time and a note sorted to the bottom for ever on ext3 is worse than one
+  sorted approximately.
+- **Search filters the sidebar; the palette is still there.** They answer
+  different questions — "narrow this list to what I mean" against "take me
+  there without touching the mouse" — and the sidebar entry is the one that
+  scales with the vault, so it is the one that is always on screen.
 - **`examples/preview.rs` grows the window until something is drawn.**
   `WidgetPaintable` declines to draw a scroller whose content overflows it, so
   a fixed height per picture had to be re-guessed every time the seed note grew.

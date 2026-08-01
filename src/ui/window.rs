@@ -11,6 +11,7 @@ use adw::subclass::prelude::*;
 use gtk::glib::{self, clone};
 
 use crate::model::note::NoteId;
+use crate::model::tree::{Row, Sort};
 use crate::ui::{
     BacklinksPanel, BrainApplication, DetailsPanel, Editor, Mode, Palette, Sidebar, TagTree,
 };
@@ -37,6 +38,12 @@ mod imp {
         pub sidebar_stack: RefCell<Option<adw::ViewStack>>,
         pub sidebar_title: RefCell<Option<adw::WindowTitle>>,
         pub clear_filter: RefCell<Option<gtk::Button>>,
+        pub search: RefCell<Option<gtk::SearchEntry>>,
+        pub search_bar: RefCell<Option<gtk::Widget>>,
+        /// How many notes the search matched, so the sidebar's subtitle can say
+        /// so. `None` when nothing is being searched for.
+        pub results: std::cell::Cell<Option<usize>>,
+        pub active_tag: RefCell<Option<String>>,
         /// Built once and reused, so reopening keeps the last query.
         pub palette: RefCell<Option<Palette>>,
         pub detail: RefCell<Option<adw::OverlaySplitView>>,
@@ -105,9 +112,20 @@ impl BrainWindow {
         let editor = Editor::new();
 
         // ---- sidebar pane ----
-        let new_button = gtk::Button::from_icon_name("list-add-symbolic");
-        new_button.set_tooltip_text(Some("New Note (Ctrl+N)"));
-        new_button.set_action_name(Some("win.new-note"));
+        // A split button, not a plain one: pressing it still writes a note in
+        // one click, and the arrow is where a folder comes from. With an empty
+        // vault there is no folder row to right-click, so a menu was the only
+        // route to the first folder — which is a route nobody finds.
+        let new_menu = gtk::gio::Menu::new();
+        new_menu.append(Some("New _Note"), Some("win.new-note"));
+        new_menu.append(Some("New _Folder…"), Some("win.new-folder"));
+        let new_button = adw::SplitButton::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text("New Note (Ctrl+N)")
+            .dropdown_tooltip("New Note or Folder")
+            .menu_model(&new_menu)
+            .action_name("win.new-note")
+            .build();
 
         let tags = TagTree::new();
 
@@ -138,6 +156,26 @@ impl BrainWindow {
         clear_filter.set_visible(false);
         sidebar_header.pack_start(&clear_filter);
 
+        // Sorting is a property of the list, so it sits on the list's own
+        // header rather than in the main menu, where it would be a setting
+        // rather than a way of looking at what is in front of you.
+        let sort_menu = gtk::gio::Menu::new();
+        for (label, name) in [
+            ("_Name", "name"),
+            ("Recently _Modified", "modified"),
+            ("Recently _Created", "created"),
+        ] {
+            let item = gtk::gio::MenuItem::new(Some(label), None);
+            item.set_action_and_target_value(Some("win.sort"), Some(&name.to_variant()));
+            sort_menu.append_item(&item);
+        }
+        let sort_button = gtk::MenuButton::builder()
+            .icon_name("view-sort-descending-symbolic")
+            .menu_model(&sort_menu)
+            .tooltip_text("Sort Notes")
+            .build();
+        sidebar_header.pack_end(&sort_button);
+
         let switcher_bar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .halign(gtk::Align::Center)
@@ -146,9 +184,66 @@ impl BrainWindow {
             .build();
         switcher_bar.append(&switcher);
 
+        // Search sits in the sidebar and always shows, rather than only in a
+        // dialog: once there are more notes than fit in the column, filtering
+        // the list *is* how the list is read, and a search you have to summon
+        // is a search you forget you have.
+        let search = gtk::SearchEntry::builder()
+            .placeholder_text("Search notes")
+            .hexpand(true)
+            .build();
+        search.set_search_delay(150);
+        let search_bar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_bottom(6)
+            .build();
+        search_bar.append(&search);
+
+        search.connect_search_changed(clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |entry| {
+                if let Some(app) = window.brain_application() {
+                    app.set_query(&entry.text());
+                }
+            }
+        ));
+        // Escape gives the list back rather than leaving you in a filtered
+        // view with the entry apparently empty.
+        search.connect_stop_search(clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |entry| {
+                entry.set_text("");
+                if let Some(editor) = window.imp().editor.borrow().as_ref() {
+                    editor.grab_focus_to_text();
+                }
+            }
+        ));
+        // Enter opens the first result, which is what typing into a list of
+        // notes is for.
+        search.connect_activate(clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_| window.open_first_result()
+        ));
+
+        // The tag list is not filtered by this entry, so it does not pretend
+        // to be.
+        sidebar_stack.connect_visible_child_name_notify(clone!(
+            #[weak]
+            search_bar,
+            move |stack| {
+                search_bar.set_visible(stack.visible_child_name().as_deref() != Some("tags"));
+            }
+        ));
+
         let sidebar_pane = adw::ToolbarView::builder().content(&sidebar_stack).build();
         sidebar_pane.add_top_bar(&sidebar_header);
         sidebar_pane.add_top_bar(&switcher_bar);
+        sidebar_pane.add_top_bar(&search_bar);
 
         tags.connect_closure(
             "tag-chosen",
@@ -172,6 +267,7 @@ impl BrainWindow {
         let note_section = gtk::gio::Menu::new();
         note_section.append(Some("_Rename…"), Some("win.rename-note"));
         note_section.append(Some("_Delete…"), Some("win.delete-note"));
+        note_section.append(Some("New _Folder…"), Some("win.new-folder"));
         menu.append_section(None, &note_section);
         let vault_section = gtk::gio::Menu::new();
         vault_section.append(Some("_Change Vault…"), Some("win.choose-vault"));
@@ -403,6 +499,34 @@ impl BrainWindow {
             ),
         );
 
+        sidebar.connect_closure(
+            "folder-activated",
+            false,
+            glib::closure_local!(
+                #[weak(rename_to = window)]
+                self,
+                move |_: Sidebar, path: String| {
+                    if let Some(app) = window.brain_application() {
+                        app.toggle_folder(&path);
+                    }
+                }
+            ),
+        );
+
+        sidebar.connect_closure(
+            "moved",
+            false,
+            glib::closure_local!(
+                #[weak(rename_to = window)]
+                self,
+                move |_: Sidebar, payload: String, destination: String| {
+                    if let Some(app) = window.brain_application() {
+                        app.move_dropped(&payload, &destination);
+                    }
+                }
+            ),
+        );
+
         editor.connect_closure(
             "link-activated",
             false,
@@ -509,6 +633,8 @@ impl BrainWindow {
         self.imp().clear_filter.replace(Some(clear_filter));
         self.imp().detail.replace(Some(detail));
         self.imp().banner.replace(Some(banner));
+        self.imp().search.replace(Some(search));
+        self.imp().search_bar.replace(Some(search_bar.upcast()));
     }
 
     fn install_actions(&self) {
@@ -603,6 +729,141 @@ impl BrainWindow {
         ));
         actions.add_action(&clear_filter);
 
+        // The sort is remembered, so the menu has to open showing what is
+        // actually in force rather than the default.
+        let current = self
+            .brain_application()
+            .map(|app| app.sort())
+            .unwrap_or_default();
+        let sort = gtk::gio::SimpleAction::new_stateful(
+            "sort",
+            Some(String::static_variant_type().as_ref()),
+            &current.as_str().to_variant(),
+        );
+        sort.connect_activate(clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |action, parameter| {
+                let Some(name) = parameter.and_then(|value| value.get::<String>()) else {
+                    return;
+                };
+                action.set_state(&name.to_variant());
+                if let Some(app) = window.brain_application() {
+                    app.set_sort(Sort::from_name(&name));
+                }
+            }
+        ));
+        actions.add_action(&sort);
+
+        let find = gtk::gio::SimpleAction::new("find", None);
+        find.connect_activate(clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, _| window.focus_search()
+        ));
+        actions.add_action(&find);
+
+        // The folder actions carry the folder they act on, so a row's menu acts
+        // on that row and not on whatever the selection happens to be.
+        let new_note_in = gtk::gio::SimpleAction::new(
+            "new-note-in",
+            Some(String::static_variant_type().as_ref()),
+        );
+        new_note_in.connect_activate(clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, parameter| {
+                let Some(folder) = parameter.and_then(|value| value.get::<String>()) else {
+                    return;
+                };
+                window.prompt_for_title("New Note", "Create", "", move |window, title| {
+                    if let Some(app) = window.brain_application() {
+                        app.create_note_in(&folder, &title);
+                    }
+                });
+            }
+        ));
+        actions.add_action(&new_note_in);
+
+        // Without a folder named, one is made wherever a new note would go:
+        // the folder last chosen in the sidebar. A "+" that puts the note here
+        // and the folder somewhere else is a "+" you cannot predict.
+        let new_folder_here = gtk::gio::SimpleAction::new("new-folder", None);
+        new_folder_here.connect_activate(clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, _| {
+                window.prompt_for_title("New Folder", "Create", "", move |window, name| {
+                    if let Some(app) = window.brain_application() {
+                        app.create_folder_here(&name);
+                    }
+                });
+            }
+        ));
+        actions.add_action(&new_folder_here);
+
+        let new_folder = gtk::gio::SimpleAction::new(
+            "new-folder-in",
+            Some(String::static_variant_type().as_ref()),
+        );
+        new_folder.connect_activate(clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, parameter| {
+                let parent = parameter
+                    .and_then(|value| value.get::<String>())
+                    .unwrap_or_default();
+                window.prompt_for_title("New Folder", "Create", "", move |window, name| {
+                    if let Some(app) = window.brain_application() {
+                        app.create_folder(&parent, &name);
+                    }
+                });
+            }
+        ));
+        actions.add_action(&new_folder);
+
+        let rename_folder = gtk::gio::SimpleAction::new(
+            "rename-folder",
+            Some(String::static_variant_type().as_ref()),
+        );
+        rename_folder.connect_activate(clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, parameter| {
+                let Some(path) = parameter.and_then(|value| value.get::<String>()) else {
+                    return;
+                };
+                let current = path.rsplit('/').next().unwrap_or(&path).to_string();
+                window.prompt_for_title(
+                    "Rename Folder",
+                    "Rename",
+                    &current,
+                    move |window, name| {
+                        if let Some(app) = window.brain_application() {
+                            app.rename_folder(&path, &name);
+                        }
+                    },
+                );
+            }
+        ));
+        actions.add_action(&rename_folder);
+
+        let delete_folder = gtk::gio::SimpleAction::new(
+            "delete-folder",
+            Some(String::static_variant_type().as_ref()),
+        );
+        delete_folder.connect_activate(clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, parameter| {
+                let Some(path) = parameter.and_then(|value| value.get::<String>()) else {
+                    return;
+                };
+                window.prompt_delete_folder(&path);
+            }
+        ));
+        actions.add_action(&delete_folder);
+
         let unused = gtk::gio::SimpleAction::new("unused-attachments", None);
         unused.connect_activate(clone!(
             #[weak(rename_to = window)]
@@ -655,9 +916,50 @@ impl BrainWindow {
 
     // ---- what the application tells the window to show ----
 
-    pub fn set_notes(&self, notes: &[(NoteId, String)]) {
+    /// Show the vault's folder tree.
+    pub fn set_rows(&self, rows: &[Row]) {
         if let Some(sidebar) = self.imp().sidebar.borrow().as_ref() {
-            sidebar.set_notes(notes);
+            sidebar.set_rows(rows);
+        }
+    }
+
+    /// Show search results in place of the tree.
+    pub fn set_results(&self, results: &[(NoteId, String)]) {
+        if let Some(sidebar) = self.imp().sidebar.borrow().as_ref() {
+            sidebar.set_results(results);
+        }
+    }
+
+    /// How many notes the search matched, or `None` when nothing is searched
+    /// for. Drives the sidebar's subtitle, so a filtered list always says it is
+    /// one.
+    pub fn set_result_count(&self, count: Option<usize>) {
+        self.imp().results.set(count);
+        self.update_sidebar_title();
+    }
+
+    /// Put the cursor in the sidebar's search entry, showing the sidebar and
+    /// the note list if either is out of the way.
+    pub fn focus_search(&self) {
+        let imp = self.imp();
+        if let Some(split) = imp.split.borrow().as_ref() {
+            split.set_show_sidebar(true);
+        }
+        if let Some(stack) = imp.sidebar_stack.borrow().as_ref() {
+            stack.set_visible_child_name("notes");
+        }
+        if let Some(search) = imp.search.borrow().as_ref() {
+            search.grab_focus();
+        }
+    }
+
+    /// Open the top result, for Enter in the search entry.
+    fn open_first_result(&self) {
+        let Some(app) = self.brain_application() else {
+            return;
+        };
+        if let Some((id, _)) = app.listed_notes().first() {
+            app.open_note(id);
         }
     }
 
@@ -755,12 +1057,13 @@ impl BrainWindow {
                     ("<Control>n", "New note"),
                     ("<Control>s", "Save now"),
                     ("<Control>r", "Reload from disk"),
-                    ("<Shift>F10", "Menu for the note in the list"),
+                    ("<Shift>F10", "Menu for the row in the list"),
                 ],
             ),
             (
                 "Finding Things",
                 &[
+                    ("<Control>f", "Search the note list"),
                     ("<Control>k", "Go to note"),
                     ("<Control><Shift>f", "Search all notes"),
                     ("<Control>Return", "Follow the link or tag at the cursor"),
@@ -909,18 +1212,8 @@ impl BrainWindow {
         if let Some(tree) = imp.tags.borrow().as_ref() {
             tree.select(tag);
         }
-        if let Some(title) = imp.sidebar_title.borrow().as_ref() {
-            match tag {
-                Some(tag) => {
-                    title.set_title("Notes");
-                    title.set_subtitle(&format!("#{tag}"));
-                }
-                None => {
-                    title.set_title("Notes");
-                    title.set_subtitle("");
-                }
-            }
-        }
+        imp.active_tag.replace(tag.map(str::to_string));
+        self.update_sidebar_title();
         if let Some(button) = imp.clear_filter.borrow().as_ref() {
             button.set_visible(tag.is_some());
         }
@@ -931,6 +1224,49 @@ impl BrainWindow {
             if let Some(stack) = imp.sidebar_stack.borrow().as_ref() {
                 stack.set_visible_child_name("notes");
             }
+        }
+    }
+
+    /// Say what the sidebar is showing: everything, one tag's notes, what a
+    /// search matched, or both at once. A filtered list that does not say it is
+    /// filtered is a list with notes missing.
+    fn update_sidebar_title(&self) {
+        let imp = self.imp();
+        let Some(title) = imp.sidebar_title.borrow().clone() else {
+            return;
+        };
+        let tag = imp.active_tag.borrow().clone();
+        let matched = imp.results.get().map(|count| match count {
+            1 => "1 match".to_string(),
+            count => format!("{count} matches"),
+        });
+
+        title.set_title("Notes");
+        title.set_subtitle(&match (tag, matched) {
+            (Some(tag), Some(matched)) => format!("#{tag} · {matched}"),
+            (Some(tag), None) => format!("#{tag}"),
+            (None, Some(matched)) => matched,
+            (None, None) => String::new(),
+        });
+    }
+
+    /// The sidebar's subtitle, for tests.
+    pub fn sidebar_subtitle_for_test(&self) -> String {
+        self.imp()
+            .sidebar_title
+            .borrow()
+            .as_ref()
+            .map(|title| title.subtitle().to_string())
+            .unwrap_or_default()
+    }
+
+    /// Type into the sidebar's search entry, for tests.
+    pub fn search_for_test(&self, query: &str) {
+        if let Some(search) = self.imp().search.borrow().as_ref() {
+            search.set_text(query);
+            // `search-changed` is debounced, and a test that waited for the
+            // timer would be a test that sometimes did not.
+            search.emit_by_name::<()>("search-changed", &[]);
         }
     }
 
@@ -1272,6 +1608,42 @@ impl BrainWindow {
 
         dialog.present(Some(self));
         entry.grab_focus();
+    }
+
+    /// Confirm removing a folder.
+    ///
+    /// The vault refuses one that still holds notes, so this only ever asks
+    /// about an empty folder — which is why it can promise that nothing is
+    /// lost, and why "delete the folder" never means "delete the notes".
+    fn prompt_delete_folder(&self, path: &str) {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let dialog = adw::AlertDialog::builder()
+            .heading(format!("Delete “{name}”?"))
+            .body("The folder is removed from the vault. A folder with notes in it is kept.")
+            .close_response("cancel")
+            .default_response("cancel")
+            .build();
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("delete", "Delete");
+        dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+
+        let path = path.to_string();
+        dialog.connect_response(
+            None,
+            clone!(
+                #[weak(rename_to = window)]
+                self,
+                move |_, response| {
+                    if response != "delete" {
+                        return;
+                    }
+                    if let Some(app) = window.brain_application() {
+                        app.delete_folder(&path);
+                    }
+                }
+            ),
+        );
+        dialog.present(Some(self));
     }
 
     fn prompt_delete(&self) {

@@ -48,9 +48,15 @@ or `Ctrl+Return` follows a link; following one that points nowhere offers to
 write it. Renaming a note repoints every link that pointed at it. The right
 pane lists what links here.
 
-**The note list.** Right-click a note — or press `Shift+F10` on it — for rename
-and delete. Both open the note first, so the menu means the same thing as the
-one in the header.
+**The folder tree.** The sidebar is the vault's own folders. Drag a note onto a
+folder to move it — that is a file rename and nothing else, and links keep
+working because they resolve by title. Drag a folder to move it whole, or into
+the space below the rows to bring it out to the root. Right-click a note — or
+press `Shift+F10` on it — for rename and delete; right-click a folder for a new
+note or subfolder inside it, or to rename or remove it. A folder is only
+removed once it is empty, so "delete the folder" never means "delete the
+notes". The sort button orders notes by name, by when they were last written,
+or by when they were made; folders stay alphabetical either way.
 
 **Tags.** `#tag` inline and `tags:` in frontmatter are the same thing. They
 nest — `#project/brain` sits under `project` — and clicking one filters the
@@ -60,8 +66,12 @@ list.
 `attachments/` and embedded. The picture is drawn at its own shape in place of
 the `![[…]]` that names it, and the filename reappears when the caret is in it.
 
-**Search.** `Ctrl+K` goes to a note by title. `Ctrl+Shift+F` searches the text
-of every note, with the match shown in context.
+**Search.** The sidebar has a search entry, always there: typing filters the
+list to what matches, by title first and then by text, with the matching line
+shown under each result. `Ctrl+F` puts the cursor in it, Enter opens the top
+result, Escape gives the tree back. `Ctrl+K` goes to a note by title without
+leaving the keyboard, and `Ctrl+Shift+F` searches the text of every note in a
+dialog with the match shown in context.
 
 **Details.** `F10` opens a pane with the note's properties and a set of
 formatting buttons, each showing the syntax it writes. They grey out while you
@@ -82,6 +92,7 @@ src/
     vault.rs               the folder: scan, atomic writes, attachments
     index.rs               titles, aliases, links, backlinks, tags, text
     search.rs              fuzzy titles and full-text query
+    tree.rs                folders and notes as sidebar rows, sorted
     config.rs              the one thing outside the vault: which vault
   ui/
     application.rs         owns the vault and index; the only thing that writes

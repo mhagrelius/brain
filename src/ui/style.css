@@ -25,10 +25,24 @@
   font-size: 0.85rem;
 }
 
-/* The folder a note lives in, shown beside its title. */
+/* The folder a note lives in, shown beside its title. Only in search results,
+ * where the tree is flattened and the indent cannot say it. */
 .note-row-folder {
   font-size: 0.8rem;
   opacity: 0.7;
+}
+
+/* A folder row reads as a container rather than a note: the same weight as a
+ * title, but not a note's, so the eye can find where a folder starts. */
+.folder-row .note-row-title {
+  font-weight: 700;
+}
+
+/* Where a dragged note would land. Accent rather than a border, since a border
+ * would resize the row and shove the list under the pointer mid-drag. */
+.drop-into {
+  background-color: alpha(var(--accent-bg-color), 0.25);
+  border-radius: 6px;
 }
 
 /* An embedded image, drawn beneath the line naming it. The hairline keeps a
