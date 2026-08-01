@@ -190,10 +190,69 @@ fn content(line: &[char], offset: usize, list: &mut ListLevels, parsed: &mut Par
 
     let content_start = content_start.min(line.len());
     if let Some(style) = block_style {
-        parsed.push_span(offset + content_start, offset + line.len(), style);
+        // A marker with nothing after it yet is still that block, so the span
+        // falls back to covering the marker itself. Otherwise a freshly typed
+        // "- " carries no style, and the item only jumps to its indent once you
+        // start writing in it.
+        let start = if content_start < line.len() {
+            content_start
+        } else {
+            indent
+        };
+        parsed.push_span(offset + start, offset + line.len(), style);
     }
 
     inline(&line[content_start..], offset + content_start, parsed);
+}
+
+/// What pressing Enter on a line should do to keep its list going.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListEnter {
+    /// Start the new line with this text: the item's indent, and either its
+    /// bullet or the next number, plus an empty checkbox if it had one.
+    Continue(String),
+    /// The item has no content. Typing a bullet and then nothing is how you say
+    /// the list is over, so clear the marker rather than laying down another.
+    EndList,
+}
+
+/// The list-continuation behaviour for pressing Enter on `line`.
+///
+/// `None` for anything that is not a list item, which leaves Enter alone.
+pub fn list_enter(line: &str) -> Option<ListEnter> {
+    let chars: Vec<char> = line.chars().collect();
+    let indent = chars.iter().take_while(|c| **c == ' ').count();
+    let rest = &chars[indent..];
+    let marker_len = bullet_len(rest).or_else(|| ordered_len(rest))?;
+
+    let after = &rest[marker_len..];
+    // A new task starts unticked however the one above it ended: carrying the
+    // tick across would mark work done that has not been written down yet.
+    let (box_len, checkbox) = match checkbox(after) {
+        Some((_, len)) => (len + 1, "[ ] "),
+        None => (0, ""),
+    };
+    if after[box_len.min(after.len())..]
+        .iter()
+        .all(|c| c.is_whitespace())
+    {
+        return Some(ListEnter::EndList);
+    }
+
+    let mut prefix: String = " ".repeat(indent);
+    if bullet_len(rest).is_some() {
+        prefix.push(rest[0]);
+    } else {
+        let digits: String = rest.iter().take_while(|c| c.is_ascii_digit()).collect();
+        // Saturating rather than wrapping: a note numbered to u32::MAX is
+        // nobody's real list, and repeating the number beats restarting at 0.
+        let next = digits.parse::<u32>().unwrap_or(0).saturating_add(1);
+        prefix.push_str(&next.to_string());
+        prefix.push(rest[digits.len()]); // '.' or ')'
+    }
+    prefix.push(' ');
+    prefix.push_str(checkbox);
+    Some(ListEnter::Continue(prefix))
 }
 
 /// `#` to `######` followed by a space.

@@ -299,6 +299,36 @@ const CASES: &[Case] = &[
         let editor = window.editor().expect("an editor");
         assert!(!editor.follow_link_at_for_test(5));
     }),
+    ("enter carries a list on to the next line", |window, _| {
+        let id = NoteId::from_relative("A.md");
+        let editor = {
+            window.show_note(Some((&id, "")));
+            window.editor().expect("an editor")
+        };
+
+        // Type a line, then press Enter at the end of it.
+        let press_enter = |typed: &str| {
+            window.show_note(Some((&id, "")));
+            editor.insert_at_for_test(0, typed);
+            editor.continue_list();
+            editor.body()
+        };
+
+        assert_eq!(press_enter("- milk"), "- milk\n- ");
+        assert_eq!(press_enter("1. first"), "1. first\n2. ");
+        assert_eq!(press_enter("  - nested"), "  - nested\n  - ");
+        assert_eq!(press_enter("- [x] wrote it"), "- [x] wrote it\n- [ ] ");
+        assert_eq!(
+            press_enter("- milk\n- "),
+            "- milk\n",
+            "Enter on an empty item ends the list instead of adding another bullet"
+        );
+        assert_eq!(
+            press_enter("just prose"),
+            "just prose",
+            "outside a list the editor declines, leaving Enter to the text view"
+        );
+    }),
     ("typing two brackets asks for candidates", |window, _| {
         let id = NoteId::from_relative("A.md");
         window.show_note(Some((&id, "See ")));

@@ -500,12 +500,23 @@ impl Editor {
             return glib::Propagation::Proceed;
         }
 
-        let Some(popover) = self.imp().popover.borrow().clone() else {
-            return glib::Propagation::Proceed;
-        };
-        if !popover.is_open() {
+        let popover = self.imp().popover.borrow().clone();
+        let completing = popover.as_ref().is_some_and(|popover| popover.is_open());
+        if !completing {
+            // Enter inside a list carries it on. Only once the completion
+            // popover is out of the way: while it is open, Return picks a note.
+            if matches!(key, Key::Return | Key::KP_Enter)
+                && !state.intersects(
+                    gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK,
+                )
+            {
+                return self.continue_list();
+            }
             return glib::Propagation::Proceed;
         }
+        let Some(popover) = popover else {
+            return glib::Propagation::Proceed;
+        };
 
         match key {
             Key::Escape => {
@@ -919,6 +930,62 @@ impl Editor {
         // The change handler was suppressed, so styling is applied here — a
         // note must arrive already styled, not on the first keystroke.
         self.restyle_all();
+    }
+
+    /// Carry a list on to the next line when Enter is pressed inside one.
+    ///
+    /// A list you have to retype the bullet for is a list you stop using, so
+    /// Enter lays down the same indent and bullet, or the next number, or a
+    /// fresh unticked checkbox. The escape hatches are the two people reach for
+    /// anyway: Enter on an empty item, or Backspace over the bullet just
+    /// inserted.
+    ///
+    /// Reports whether it handled the key, so a note being read — or a line
+    /// that is not a list at all — leaves Enter to the text view.
+    pub fn continue_list(&self) -> glib::Propagation {
+        if self.imp().reading.get() {
+            return glib::Propagation::Proceed;
+        }
+        let view = self.view();
+        let buffer = view.buffer();
+
+        let cursor = buffer.iter_at_mark(&buffer.get_insert());
+        let mut line_start = cursor;
+        line_start.set_line_offset(0);
+        let mut line_end = line_start;
+        if !line_end.ends_line() {
+            line_end.forward_to_line_end();
+        }
+        let line = buffer.text(&line_start, &line_end, true);
+
+        let Some(action) = markdown::list_enter(&line) else {
+            return glib::Propagation::Proceed;
+        };
+
+        // One undo step, so Ctrl+Z takes back the whole line rather than the
+        // newline and the bullet separately.
+        buffer.begin_user_action();
+        buffer.delete_selection(true, true);
+        match action {
+            markdown::ListEnter::Continue(prefix) => {
+                buffer.insert_at_cursor(&format!("\n{prefix}"));
+            }
+            // Leave the cursor on the now-blank line: the list is over, and the
+            // next Enter is an ordinary one.
+            markdown::ListEnter::EndList => {
+                let mut start = buffer.iter_at_mark(&buffer.get_insert());
+                start.set_line_offset(0);
+                let mut end = start;
+                if !end.ends_line() {
+                    end.forward_to_line_end();
+                }
+                buffer.delete(&mut start, &mut end);
+            }
+        }
+        buffer.end_user_action();
+
+        view.scroll_mark_onscreen(&buffer.get_insert());
+        glib::Propagation::Stop
     }
 
     /// Apply a formatting action to the selection, or at the cursor.

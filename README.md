@@ -37,6 +37,10 @@ hidden except in the construct the caret is inside — put it in `**bold**` and
 its asterisks come back, while the link later on the same line stays rendered.
 So a note reads as prose while staying plain text on disk.
 
+**Enter carries a list on.** A new line inside a list starts with the same
+indent and bullet, or the next number, or a fresh unticked checkbox. Enter on
+an empty item ends the list instead, and Backspace takes the bullet back off.
+
 **Reading mode.** `Ctrl+E`, or the eye in the header, hides the syntax
 everywhere and stops the note accepting edits. There is no second widget and no
 preview pane: it is the same view with the caret taken away, so the scroll

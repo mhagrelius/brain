@@ -861,9 +861,82 @@ fn a_nested_task_keeps_both_its_level_and_its_checkbox() {
 }
 
 #[test]
+fn an_item_with_nothing_in_it_yet_is_still_an_item() {
+    // The line Enter has just laid down. Without a span the editor has no tag
+    // to hang the indent on, so a new item sits at the left edge until you type
+    // into it and then jumps.
+    for source in ["- ", "  - ", "1. ", "- [ ] "] {
+        assert!(
+            parse(source)
+                .spans
+                .iter()
+                .any(|span| matches!(span.style, Style::ListItem(_))),
+            "{source:?} was left unstyled"
+        );
+    }
+    // And it nests like any other, so Enter inside a nested item leaves the
+    // caret at the depth it was already at.
+    assert_eq!(levels("- a\n  - "), [0, 1]);
+}
+
+#[test]
 fn ordered_and_bulleted_items_nest_the_same_way() {
     assert_eq!(levels("1. a\n  2. b\n    3. c"), [0, 1, 2]);
     assert_eq!(levels("- a\n  1. b"), [0, 1]);
+}
+
+// ---- carrying a list on to the next line ----
+
+/// The continuation prefix, for readable assertions.
+fn continues(line: &str) -> Option<String> {
+    match list_enter(line) {
+        Some(ListEnter::Continue(prefix)) => Some(prefix),
+        _ => None,
+    }
+}
+
+#[test]
+fn enter_repeats_the_bullet() {
+    for bullet in ['-', '*', '+'] {
+        let line = format!("{bullet} milk");
+        assert_eq!(continues(&line).as_deref(), Some(&*format!("{bullet} ")));
+    }
+}
+
+#[test]
+fn enter_counts_the_next_number_on() {
+    assert_eq!(continues("1. first").as_deref(), Some("2. "));
+    assert_eq!(continues("9. ninth").as_deref(), Some("10. "));
+    assert_eq!(continues("12) twelfth").as_deref(), Some("13) "));
+}
+
+#[test]
+fn enter_keeps_the_item_at_its_own_indent() {
+    assert_eq!(continues("  - nested").as_deref(), Some("  - "));
+    assert_eq!(continues("    2. second").as_deref(), Some("    3. "));
+}
+
+#[test]
+fn enter_after_a_task_starts_an_unticked_one() {
+    // Carrying the tick across would mark work done that has not been written
+    // down yet.
+    assert_eq!(continues("- [ ] write it").as_deref(), Some("- [ ] "));
+    assert_eq!(continues("- [x] wrote it").as_deref(), Some("- [ ] "));
+    assert_eq!(continues("  - [X] nested").as_deref(), Some("  - [ ] "));
+}
+
+#[test]
+fn enter_on_an_empty_item_ends_the_list() {
+    for line in ["- ", "  - ", "1. ", "  3) ", "- [ ] ", "  - [x] "] {
+        assert_eq!(list_enter(line), Some(ListEnter::EndList), "{line:?}");
+    }
+}
+
+#[test]
+fn enter_leaves_everything_that_is_not_a_list_alone() {
+    for line in ["", "just a note", "# Heading", "> quoted", "1.no space"] {
+        assert_eq!(list_enter(line), None, "{line:?}");
+    }
 }
 
 // ---- bold and italic together ----

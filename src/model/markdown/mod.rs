@@ -40,6 +40,7 @@ mod links;
 mod scan;
 
 pub use links::{extract, extract_with, rewrite_target, Extracted, TagRef, WikiLink};
+pub use scan::{list_enter, ListEnter};
 
 /// A styled region of the note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
