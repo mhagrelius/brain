@@ -28,6 +28,11 @@ unreadable to `cat`.
 - **Search.** A sidebar entry filters as you type, `Ctrl+K` jumps to a note by
   title, and `Ctrl+Shift+F` searches every note's text with the match in
   context.
+- **Hybrid search, if you run a model.** `Ctrl+Shift+F` also searches by
+  *meaning*: BM25 over the words fused with embeddings from a local llama.cpp
+  server, so "why is my bread so flat" finds the note about hydration that never
+  says either word. Off by keeping no server; nothing leaves the machine when
+  you do run one.
 - **Attachments.** Drop a file or paste an image and it is copied into
   `attachments/` and embedded, drawn inline at its own shape.
 - **Formatting and properties.** `F10` opens a pane with the note's properties
@@ -109,6 +114,30 @@ result, Escape gives the tree back. `Ctrl+K` goes to a note by title without
 leaving the keyboard, and `Ctrl+Shift+F` searches the text of every note in a
 dialog with the match shown in context.
 
+**Semantic search.** Point Brain at a local embedding server and `Ctrl+Shift+F`
+starts finding notes by what they mean as well as what they say. The words and
+the vectors are searched separately and fused, so a question in your own words
+finds the note, and a serial number still finds the note with the serial number.
+
+```sh
+# a small embedding model, on the CPU, beside whatever is on the GPU
+llama-server -m nomic-embed-text-v1.5.Q8_0.gguf --embeddings --pooling mean \
+             -ngl 0 --host 127.0.0.1 --port 8081
+```
+
+Brain looks for it on `127.0.0.1:8081`; `embedding_url` in
+`~/.config/brain/config.json` points it elsewhere, and an empty string turns the
+whole thing off. With no server reachable, search is the words alone — that is a
+supported state, not a broken one.
+
+Notes are embedded a few seconds after they change, in the background, and the
+vectors are cached under `~/.cache/brain/`. Nothing is written into the vault,
+and deleting the cache costs one pass of re-embedding — about five seconds per
+five hundred notes on a CPU. Notes moved, renamed or deleted *outside* Brain are
+reconciled on the next scan; a note that only moved keeps its vectors rather than
+being embedded again. `cargo run --example semantic_check` proves all of that
+against whatever model you are actually serving.
+
 **Details.** `F10` opens a pane with the note's properties and a set of
 formatting buttons, each showing the syntax it writes. They grey out while you
 are reading.
@@ -127,7 +156,9 @@ src/
     note.rs                the record: id, frontmatter, body
     vault.rs               the folder: scan, atomic writes, attachments
     index.rs               titles, aliases, links, backlinks, tags, text
-    search.rs              fuzzy titles and full-text query
+    search.rs              fuzzy titles, full text, and the RRF fusion
+    bm25.rs                lexical ranking over the counts already in memory
+    semantic.rs            vectors, the catch-up planner, the embedder seam
     tree.rs                folders and notes as sidebar rows, sorted
     config.rs              the one thing outside the vault: which vault
   ui/
@@ -138,6 +169,7 @@ src/
     sidebar.rs, tag_tree.rs, details_panel.rs, backlinks_panel.rs
     palette.rs             Ctrl+K and Ctrl+Shift+F
     attachments.rs         drop, paste, embedded images
+    embedder.rs            the one socket: a local llama.cpp server
     watcher.rs             gio::FileMonitor per directory
 ```
 
@@ -164,14 +196,21 @@ cargo build
 ./test.sh --headless            # the same under Xvfb
 cargo run --example preview -- /tmp/preview [dark]
 cargo run --example icons_check # every icon name resolves in the theme
+cargo run --example semantic_check  # hybrid search against a real model server
 ```
+
+`semantic_check` is not part of `test.sh` because it needs a model served. It
+builds a vault, embeds it, asks questions whose answers are known — including
+ones the vault cannot answer, which must come back empty — then moves, edits and
+deletes notes behind the app's back and checks the vectors caught up. It exits
+non-zero on any failure, so it runs as a gate rather than reads as a demo.
 
 ### Tests
 
 | Where | Covers |
 |---|---|
 | `src/model/**` | the scanner, frontmatter round-trip, index, search — the bulk |
-| `tests/session.rs` | whole scenarios against a real vault, no GTK |
+| `tests/session.rs` | whole scenarios against a real vault, no GTK — including the vectors keeping up with files changed behind the app's back |
 | `tests/widgets.rs` | widgets, in one `#[test]` because GTK is thread-affine |
 | `tests/lifecycle.rs` | the real application, driven end to end |
 | `tests/first_run.rs` | an empty vault and the first note made in it |

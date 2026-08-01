@@ -157,6 +157,99 @@ quick open: fuzzy over titles, aliases and paths, ranked, arrow keys and Enter.
 text index, results grouped by note with a snippet per hit and the match
 highlighted.
 
+### Hybrid search
+
+`Ctrl+Shift+F` fuses two rankings: BM25 over the words, and cosine similarity
+over embeddings of the notes. They fail in opposite directions. BM25 cannot find
+a note that answers your question in different words; vectors cannot find a
+serial number, a filename fragment or a person's name they have never seen. A
+personal knowledge base is asked both kinds of question, and an agent searching
+it on your behalf asks the first kind almost exclusively.
+
+The fusion is Reciprocal Rank Fusion at k=60 — each half contributes `1/(60 +
+rank)` and the sums are sorted. RRF is used rather than a weighted score because
+the two halves are not on a common scale and never will be: BM25 is unbounded
+and corpus-dependent, cosine is [-1, 1] and model-dependent. RRF only reads the
+order, so swapping the embedding model cannot silently re-tune the ranking.
+
+**A hit says which half found it.** `lexical` and `semantic` are ranks on the
+result, not folded into one number, because "both halves agreed" and "only the
+vectors liked this" are different degrees of confidence and the caller is often
+an agent. This is what carries the weight that a threshold cannot — see below.
+
+**No index for the lexical half.** BM25 is arithmetic over term counts Brain
+already holds in memory; building it over 500 notes takes 3 ms. SQLite FTS5
+would put a second copy of every note in a file that has to be kept level with
+the vault, which is the bookkeeping problem the whole app is arranged to avoid,
+and would hand the tokenizer to a dependency at the point where tokenization is
+the thing worth controlling — the stopword list and the noise floor below are
+both there because of what was measured, not what a default did.
+
+**Postgres and pgvector were available and not used.** At the size of a personal
+vault the vectors are a few thousand rows and brute-force cosine over all of
+them is 0.27 ms — an index solves a problem this does not have, and a network
+database would add an operational dependency, a second source of truth about the
+vault, and a reason for search to fail while the notes are sitting right there
+on disk. `model::semantic::Store` is the seam where that changes: if these notes
+ever need to be searched from another machine, it is one type to reimplement.
+
+#### Keeping the vectors level with the vault
+
+Embedding is the one derived thing in Brain expensive enough that throwing it
+away and rebuilding is not an option — a rescan is microseconds, but re-embedding
+a vault is minutes. So it is the one thing that is updated incrementally, and
+the update is written as a *pure function* rather than as a set of event
+handlers: `semantic::plan` takes what the vault holds now and what the store
+holds now, and returns work — embed these, carry these across, forget these.
+
+Nothing subscribes to anything. A note edited in Brain, a folder moved in
+Nautilus, and a sync client rewriting fifty files while the app was closed are
+the same input to that function, which is the only way the two thirds of changes
+that never reach Brain's code can be handled at all.
+
+Entries are keyed by note id and carry the digest of the text that was embedded:
+
+- same id, changed digest → the note was edited, re-embed it.
+- new id, known digest → it was **moved**, so the vectors are carried across and
+  the pass costs nothing. Dragging a folder of fifty notes is the commonest big
+  change a vault sees and it is pure bookkeeping.
+- an id the vault no longer lists → forget it. A vector for a deleted note is
+  worse than a missing one: it returns a hit that opens nothing.
+- a different model, or a different prompting scheme → the store is emptied, not
+  migrated. Vectors from two models rank plausibly and wrongly.
+
+A pass runs five seconds after any rescan, on a worker thread, and is expected to
+lag: nothing on screen waits for it, and search works without it. The bookkeeping
+is applied before any embedding starts, so a store written after a crash mid-pass
+is behind rather than wrong.
+
+#### What was measured, and what it cost
+
+Against `nomic-embed-text-v1.5` served on CPU by llama.cpp, on a four-note vault
+with questions whose answers were known:
+
+- The model's **task prefixes are not optional**. `search_document:` on notes and
+  `search_query:` on questions moved the intended note from 0.57 to 0.62 and
+  lifted the whole relevant band clear of the floor. Omitting them costs recall
+  silently — the vectors still come back and still rank.
+- **The floor cannot separate everything.** Questions the vault answered scored
+  0.588–0.695; questions about things it had never heard of scored 0.36–0.55. But
+  "when is my passport due for renewal" scored **0.650** against a standup note
+  about holding a release until a deadline — above every genuine answer. The
+  bands touch, and no threshold both admits the real answers and excludes that.
+  The floor is set at 0.55 to catch the clearly-unrelated, and the honest part of
+  the answer is the provenance: that hit is semantic-only, and a caller that
+  needs certainty can require the lexical half to have named the note too.
+- **A weak lexical match is worse than none**, because fusion ranks rather than
+  scores. A note sharing only the word "so" with a query scored 0.4 against the
+  right note's 3.1 — and then arrived at the fusion as *rank 1*, a hair behind
+  rank 0, outranking the best semantic match in the vault. Hence the noise floor
+  at a tenth of the best score, and hence the stopword list: in a four-note vault
+  "in" appears in one note and is statistically as specific as "hydration".
+
+Cost at 500 notes: 4.8 s to embed on CPU (~105 notes/sec), 4.8 MB of cache, 0.6 ms
+for a pass over an unchanged vault, 5 ms to embed a query and 0.27 ms to search.
+
 ### Attachments
 
 Drop a file on the editor and it is copied into `attachments/`, deduplicated by
@@ -190,7 +283,9 @@ src/
       links.rs               [[wikilink]] and #tag extraction
     vault.rs                 the folder: scan, read, atomic write, rename
     index.rs                 titles, aliases, links, backlinks, tags, text
-    search.rs                fuzzy title match and full-text query
+    search.rs                fuzzy title match, full text, and the RRF fusion
+    bm25.rs                  the lexical ranking: term counts, no index
+    semantic.rs              vectors, the catch-up planner, the embedder seam
     tree.rs                  folders and notes flattened into sidebar rows
     config.rs                the one thing outside the vault: which vault
   ui/
@@ -203,6 +298,7 @@ src/
     backlinks_panel.rs       the 360px right-hand pane
     palette.rs               Ctrl+K and Ctrl+Shift+F
     attachments.rs           drop target, clipboard paste, embed widgets
+    embedder.rs              the one socket: llama.cpp /v1/embeddings
     style.css, style-dark.css
 ```
 
@@ -343,6 +439,28 @@ Where the finished thing differs from this document, this is what happened.
   beside the scanner, and a test parses what every button writes to prove the
   scanner styles it: a button that emitted syntax the editor rendered as plain
   prose would be worse than no button.
+- **Semantic search arrived, and it does not use a database.** The design said
+  no SQLite and no embedding model, on the grounds that Brain's own index was
+  the retrieval and hybrid recall had only been worth building in `llamatui`
+  because a SQLite blob had nothing else. That held until the consumer changed:
+  an agent searching the vault asks in its own words, not the note's, and every
+  such question missed. The measurement that settled it is in `semantic_check` —
+  three paraphrases that the lexical half returns nothing for and the fused
+  search answers correctly. What the original reasoning got right is that no
+  database was needed for it: the lexical half is arithmetic over the existing
+  in-memory index, and the vectors are a `BTreeMap` in a cache file.
+- **The embedding cache is the first thing Brain keeps that it cannot rebuild
+  cheaply.** Everything else derived is thrown away and recomputed on any doubt.
+  Vectors cost minutes rather than microseconds, so they are updated
+  incrementally instead — which is why the update is a pure planning function
+  with its own test suite rather than a handler hanging off the watcher. The
+  vault is still canonical: delete the cache and the only cost is time.
+- **A cosine floor cannot tell "nothing about that" from "close enough".** The
+  intent was that an off-topic query returns nothing, and it mostly does — but
+  the measured bands overlap, and one off-topic question outscored every genuine
+  one. Rather than tune a constant until one vault's questions pass, hits carry
+  which half found them, so a caller can demand corroboration. Written down here
+  because the failure is invisible in a demo and would otherwise be rediscovered.
 - **The reveal is per-construct, and there is a reading mode.** The design said
   no modes and syntax revealed in the cursor's block, on Stickies' precedent.
   Stickies could hide everything on focus-out because focus genuinely leaves a
