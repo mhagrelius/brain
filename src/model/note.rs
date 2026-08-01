@@ -12,7 +12,12 @@ use crate::model::markdown;
 /// id to keep in sync with it, and no database row to orphan when someone moves
 /// a file in Nautilus. Renaming a note therefore changes its id, which is why
 /// renaming also rewrites inbound links.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// Serialised as the bare path string, so the embedding cache on disk can be
+/// read with `jq` and diffed by eye.
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct NoteId(String);
 
 impl NoteId {
