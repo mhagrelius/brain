@@ -23,6 +23,16 @@ adw = { package = "libadwaita", version = "0.9", features = ["v1_9"] }
 gio = { version = "0.22", features = ["v2_80"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The platform's HTTP client, for the one thing Brain talks to over a socket:
+# a local llama.cpp server that turns notes into vectors. It ships in
+# org.gnome.Sdk, so it costs nothing at packaging, and Familiar already speaks
+# to the same server through it — a pattern established in one of these apps is
+# the pattern here. Needs `libsoup-3.0-dev` to build. The calls Brain makes are
+# blocking ones on a worker thread rather than the async ones on the main loop:
+# the embedding work is a batch that runs behind the app, not a stream the user
+# is watching, and a synchronous seam is what lets `model::semantic` be tested
+# with a fake instead of a server.
+soup = { package = "soup3", version = "0.9" }
 # Dates in frontmatter (created/updated) and timestamped attachment names.
 chrono = { version = "0.4", default-features = false, features = [
     "std",

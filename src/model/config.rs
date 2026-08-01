@@ -38,6 +38,15 @@ pub struct Config {
     /// How the sidebar orders notes: `name`, `modified` or `created`.
     #[serde(default)]
     pub sort: String,
+    /// Where the embedding server is, for semantic search.
+    ///
+    /// Absent means the default, a llama.cpp server on the loopback address.
+    /// An empty string means off: no vectors, no requests, and search falls
+    /// back to words alone. Not a boolean, because "which server" and "whether
+    /// at all" are the same question — there is nothing to turn on if nothing
+    /// is serving a model.
+    #[serde(default)]
+    pub embedding_url: Option<String>,
     /// Which folders were open in the sidebar. View state, not vault state —
     /// losing it costs one click per folder, so it lives here rather than
     /// anywhere near the notes.
@@ -170,6 +179,7 @@ mod tests {
             window_maximized: false,
             reading_mode: true,
             sort: "modified".into(),
+            embedding_url: Some("http://127.0.0.1:8081".into()),
             expanded_folders: vec!["Meetings".into()],
         };
         config.save(&path).expect("save");

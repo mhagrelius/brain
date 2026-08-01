@@ -13,11 +13,13 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib::{self, clone};
 
+use crate::model::bm25::Bm25;
 use crate::model::config::Config;
 use crate::model::index::{Index, Resolution};
 use crate::model::markdown;
 use crate::model::note::{Note, NoteId};
 use crate::model::search;
+use crate::model::semantic;
 use crate::model::tree::{self, Listed, Row, Sort};
 use crate::model::vault::{Vault, VaultError};
 use crate::ui::{BrainWindow, Dragged, Watcher};
@@ -26,6 +28,14 @@ use crate::APP_ID;
 /// How often a dirty note is written out. Long enough to be free while typing,
 /// short enough that a hard crash loses a couple of seconds at worst.
 const TICK: Duration = Duration::from_secs(2);
+
+/// How long the vectors are allowed to lag the vault.
+///
+/// A save, a rename and the watcher noticing the same write all land within a
+/// second of each other, and each one rescans. Waiting past the flurry means
+/// embedding a note once instead of three times, and nothing on screen is
+/// waiting for the result.
+const CATCH_UP_DELAY: Duration = Duration::from_secs(5);
 
 mod imp {
     use super::*;
@@ -62,6 +72,22 @@ mod imp {
         /// Watches the vault for changes made outside Brain. Dropped and
         /// rebuilt whenever the vault changes, which also cancels its monitors.
         pub watcher: RefCell<Option<Watcher>>,
+        /// BM25 counts over the current index, rebuilt with it. Cheap enough to
+        /// rebuild and wrong enough to keep if it is not.
+        pub lexical: RefCell<Bm25>,
+        /// The vectors, and where they are cached. Derived data: losing the
+        /// file costs one pass of embedding.
+        pub vectors: RefCell<semantic::Store>,
+        pub vectors_path: RefCell<Option<PathBuf>>,
+        /// A catch-up pass is on a worker thread. A second one must not start
+        /// beside it — they would both write the store — so a change arriving
+        /// mid-pass sets `restack` and the pass runs again when it lands.
+        pub catching_up: Cell<bool>,
+        pub restack: Cell<bool>,
+        pub catchup_tick: RefCell<Option<glib::SourceId>>,
+        /// The last query embedded, and its vector. One entry, because the only
+        /// query worth having a vector for is the one in the palette now.
+        pub query_vector: RefCell<Option<(String, Vec<f32>)>>,
     }
 
     #[glib::object_subclass]
@@ -293,6 +319,7 @@ impl BrainApplication {
         imp.expanded
             .replace(config.expanded_folders.iter().cloned().collect());
         imp.config.replace(config);
+        self.load_vectors();
         self.rescan();
         self.start_watching();
     }
@@ -371,6 +398,10 @@ impl BrainApplication {
         imp.config.borrow_mut().last_note = None;
         self.save_config();
 
+        // Before the rescan: the rescan schedules a catch-up, and it should
+        // start from whatever this vault already had embedded rather than from
+        // the previous vault's vectors.
+        self.load_vectors();
         self.rescan();
         self.start_watching();
         self.refresh_notes();
@@ -485,11 +516,17 @@ impl BrainApplication {
         let imp = self.imp();
         let Some(vault) = imp.vault.borrow().clone() else {
             imp.index.replace(Index::default());
+            imp.lexical.replace(Bm25::default());
             return;
         };
 
         let (notes, problems) = vault.scan();
         imp.index.replace(Index::build(&notes));
+        imp.lexical.replace(Bm25::build(&imp.index.borrow()));
+        // Whatever changed — a save here, a `git pull` behind the app's back,
+        // or a folder dragged in Nautilus — the vectors are now behind the
+        // vault by exactly the difference the planner will find.
+        self.schedule_catch_up();
 
         // One file with the wrong permissions must not stop the app opening,
         // but it must not be silent either.
@@ -500,6 +537,179 @@ impl BrainApplication {
                 count => window.toast(&format!("Could not read {count} files")),
             }
         }
+    }
+
+    // ---- vectors ----
+
+    /// Bring the vectors level with the vault, a moment from now.
+    ///
+    /// Debounced, and deliberately unhurried. A save, a rename and an external
+    /// change can arrive within a second of each other, and each one triggers a
+    /// rescan; embedding after every one of them would mean embedding a note
+    /// three times to reach the state it was already in. Nothing in the app is
+    /// waiting on the result — search works without it — so a few seconds of
+    /// lag costs nothing and saves the work.
+    fn schedule_catch_up(&self) {
+        let imp = self.imp();
+        if let Some(pending) = imp.catchup_tick.take() {
+            pending.remove();
+        }
+        if imp.vault.borrow().is_none() {
+            return;
+        }
+        let source = glib::timeout_add_local_once(
+            CATCH_UP_DELAY,
+            clone!(
+                #[weak(rename_to = app)]
+                self,
+                move || {
+                    app.imp().catchup_tick.replace(None);
+                    app.catch_up_now();
+                }
+            ),
+        );
+        imp.catchup_tick.replace(Some(source));
+    }
+
+    /// Run one catch-up pass on a worker thread.
+    ///
+    /// The thread is handed copies of the index and the store and gives back a
+    /// new store. Nothing is shared, so there is no lock and no way for the
+    /// main loop to see a half-updated set of vectors: either the pass lands
+    /// whole or the old store stands.
+    fn catch_up_now(&self) {
+        let imp = self.imp();
+        if imp.catching_up.get() {
+            // A pass is already out. Whatever changed will be caught by the one
+            // queued behind it rather than by a second thread writing the same
+            // store.
+            imp.restack.set(true);
+            return;
+        }
+        let Some(url) = self.embedding_url() else {
+            return; // semantic search is turned off
+        };
+        let index = imp.index.borrow().clone();
+        let store = imp.vectors.borrow().clone();
+        imp.catching_up.set(true);
+
+        glib::spawn_future_local(clone!(
+            #[weak(rename_to = app)]
+            self,
+            async move {
+                let outcome = gtk::gio::spawn_blocking(move || {
+                    let mut store = store;
+                    let embedder = crate::ui::Llama::connect(&url)?;
+                    let report = semantic::catch_up(&mut store, &index, &embedder);
+                    Ok::<_, semantic::EmbedError>((store, report))
+                })
+                .await;
+
+                app.imp().catching_up.set(false);
+                // The vectors are only replaced wholesale, on the main thread,
+                // which is the same discipline the index follows. Anything else
+                // — no server, or one that refused — is not an error the user
+                // needs a dialog about: search carries on lexically and the
+                // next pass tries again.
+                if let Ok(Ok((store, report))) = outcome {
+                    app.absorb_vectors(store, report);
+                }
+                if app.imp().restack.replace(false) {
+                    app.schedule_catch_up();
+                }
+            }
+        ));
+    }
+
+    /// Take on the store a pass produced, and write it out.
+    fn absorb_vectors(&self, store: semantic::Store, report: semantic::Report) {
+        let imp = self.imp();
+        imp.vectors.replace(store);
+        if let Some(path) = imp.vectors_path.borrow().clone() {
+            // A cache that could not be written is not worth a word to the
+            // user: the vectors are in memory and work, and the next pass
+            // writes them again.
+            let _ = imp.vectors.borrow().save(&path);
+        }
+
+        // A pass that embedded something may have changed what a search would
+        // return, and the palette is showing the previous answer.
+        if !report.is_quiet() {
+            if let Some(window) = self.window() {
+                window.refresh_palette();
+            }
+        }
+    }
+
+    /// Where the embedding server is, or `None` when semantic search is off.
+    ///
+    /// Off is a configured empty string, not a missing key: a vault with no
+    /// server reachable behaves the same as one with the feature turned off,
+    /// and the difference is only whether Brain keeps trying.
+    fn embedding_url(&self) -> Option<String> {
+        let configured = self.imp().config.borrow().embedding_url.clone();
+        match configured {
+            Some(url) if url.trim().is_empty() => None,
+            Some(url) => Some(url),
+            None => Some(crate::ui::DEFAULT_EMBEDDING_URL.to_string()),
+        }
+    }
+
+    /// Point the vector store at a vault, reading whatever was cached for it.
+    fn load_vectors(&self) {
+        let imp = self.imp();
+        let Some(vault) = imp.vault.borrow().clone() else {
+            imp.vectors.replace(semantic::Store::default());
+            imp.vectors_path.replace(None);
+            return;
+        };
+        let path = semantic::default_store_path(vault.root());
+        imp.vectors.replace(semantic::Store::load(&path));
+        imp.vectors_path.replace(Some(path));
+    }
+
+    /// Embed a query so the semantic half of the next search can use it.
+    ///
+    /// The lexical answer is already on screen by the time this is called; when
+    /// the vector arrives the palette asks again and the fused answer replaces
+    /// it. Typing a longer query in the meantime is fine — the result is stored
+    /// against the query it came from, and a stale one simply never matches.
+    fn embed_query(&self, query: &str) {
+        let Some(url) = self.embedding_url() else {
+            return;
+        };
+        if self.imp().vectors.borrow().is_empty() {
+            return; // nothing to compare a query against yet
+        }
+        let query = query.to_string();
+        glib::spawn_future_local(clone!(
+            #[weak(rename_to = app)]
+            self,
+            async move {
+                let wanted = query.clone();
+                let outcome = gtk::gio::spawn_blocking(move || {
+                    use crate::model::semantic::Embedder;
+                    // The query path, not the passage one: the model is trained
+                    // to treat a question differently from the text answering
+                    // it, and using the wrong side costs recall silently.
+                    crate::ui::Llama::connect(&url)?.embed_query(&query)
+                })
+                .await;
+
+                if let Ok(Ok(vector)) = outcome {
+                    app.imp().query_vector.replace(Some((wanted, vector)));
+                    if let Some(window) = app.window() {
+                        window.refresh_palette();
+                    }
+                }
+            }
+        ));
+    }
+
+    /// The vectors as they stand, for tests and for callers that want to search
+    /// the vault themselves.
+    pub fn vectors(&self) -> semantic::Store {
+        self.imp().vectors.borrow().clone()
     }
 
     /// The notes the sidebar is showing: every note, or the ones carrying the
@@ -1001,18 +1211,36 @@ impl BrainApplication {
                     highlight: None,
                 })
                 .collect(),
-            crate::ui::Mode::Text => search::by_text(&index, query, 30)
-                .into_iter()
-                .map(|matched| {
-                    let snippet = matched.snippets.first();
-                    crate::ui::Hit {
-                        id: matched.id.as_str().to_string(),
-                        title: matched.id.title().to_string(),
-                        detail: snippet.map(|s| s.text.clone()).unwrap_or_default(),
-                        highlight: snippet.map(|s| (s.start, s.end)),
-                    }
-                })
-                .collect(),
+            // Hybrid: BM25 over the words, vectors over the meaning, fused.
+            // The vector half is whatever is already known about this query —
+            // on the first keystroke that is nothing, so the first answer is
+            // lexical and the fused one replaces it a moment later.
+            crate::ui::Mode::Text => {
+                let lexical = self.imp().lexical.borrow();
+                let vectors = self.imp().vectors.borrow();
+                let embedded = self.imp().query_vector.borrow();
+                let semantic = embedded
+                    .as_ref()
+                    .filter(|(embedded, _)| embedded == query)
+                    .map(|(_, vector)| (&*vectors, vector.as_slice()));
+                if semantic.is_none() {
+                    self.embed_query(query);
+                }
+
+                search::hybrid(&index, &lexical, semantic, query, 30)
+                    .into_iter()
+                    .map(|hit| crate::ui::Hit {
+                        id: hit.id.as_str().to_string(),
+                        title: hit.id.title().to_string(),
+                        // Underlined where the words are, and not underlined at
+                        // all when the vectors found it and the words are not
+                        // there — which is the honest rendering of a hit that
+                        // matched on meaning.
+                        highlight: search::highlight_of(&hit.snippet, query),
+                        detail: hit.snippet,
+                    })
+                    .collect()
+            }
         }
     }
 

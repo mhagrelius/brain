@@ -304,6 +304,19 @@ impl Palette {
         self.emit_by_name::<()>("query-changed", &[&query]);
     }
 
+    /// Ask for the results again, because something behind them changed.
+    ///
+    /// The semantic half of a text search arrives after the lexical half — the
+    /// query has to reach a model and come back — so the palette answers
+    /// instantly with what it has and is told to ask again when the rest lands.
+    /// A no-op when nothing has been typed, so an embedding that arrives after
+    /// the palette was cleared does not repopulate it.
+    pub fn refresh(&self) {
+        if !self.query().is_empty() {
+            self.query_changed();
+        }
+    }
+
     /// Show these results.
     pub fn set_hits(&self, hits: &[Hit]) {
         let imp = self.imp();

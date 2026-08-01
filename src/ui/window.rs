@@ -1090,6 +1090,17 @@ impl BrainWindow {
         dialog
     }
 
+    /// Ask the palette to fetch its results again.
+    ///
+    /// Called when the semantic half of a search arrives after the lexical
+    /// half, or when a catch-up pass changed what the vault knows. A no-op
+    /// unless a palette is open with something typed in it.
+    pub fn refresh_palette(&self) {
+        if let Some(palette) = self.imp().palette.borrow().as_ref() {
+            palette.refresh();
+        }
+    }
+
     /// Open the search palette, building it the first time.
     fn open_palette(&self, mode: Mode) {
         let existing = self.imp().palette.borrow().clone();
