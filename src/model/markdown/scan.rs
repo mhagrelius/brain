@@ -33,7 +33,7 @@ pub(super) fn line(
         }
         LineState::Fence => {
             if is_fence(chars) {
-                parsed.push_marker(offset, offset + chars.len());
+                parsed.push_marker(offset, offset + chars.len(), (offset, offset + chars.len()));
                 LineState::Normal
             } else {
                 parsed.push_span(offset, offset + chars.len(), Style::CodeBlock);
@@ -56,7 +56,7 @@ pub(super) fn line(
         LineState::Normal => {
             if is_fence(chars) {
                 // The fence itself is syntax; the lines between are code.
-                parsed.push_marker(offset, offset + chars.len());
+                parsed.push_marker(offset, offset + chars.len(), (offset, offset + chars.len()));
                 LineState::Fence
             } else if is_rule(chars) {
                 parsed.push_span(offset, offset + chars.len(), Style::Rule);
@@ -137,6 +137,11 @@ fn content(line: &[char], offset: usize, list: &mut ListLevels, parsed: &mut Par
         return;
     }
 
+    // A block prefix belongs to its whole line, so the caret anywhere on the
+    // line brings the hashes or the quote arrow back. Inline constructs are
+    // narrower: see `inline`.
+    let whole_line = (offset, offset + line.len());
+
     let indent = line.iter().take_while(|c| **c == ' ').count();
     let rest = &line[indent..];
 
@@ -150,11 +155,11 @@ fn content(line: &[char], offset: usize, list: &mut ListLevels, parsed: &mut Par
     let (content_start, block_style) = if let Some(level) = heading_level(rest) {
         // "### " — the hashes and the space are syntax.
         let marker_len = level as usize + 1;
-        parsed.push_marker(offset + indent, offset + indent + marker_len);
+        parsed.push_marker(offset + indent, offset + indent + marker_len, whole_line);
         (indent + marker_len, Some(Style::Heading(level)))
     } else if rest.starts_with(&['>']) {
         let marker_len = if rest.get(1) == Some(&' ') { 2 } else { 1 };
-        parsed.push_marker(offset + indent, offset + indent + marker_len);
+        parsed.push_marker(offset + indent, offset + indent + marker_len, whole_line);
         (indent + marker_len, Some(Style::Quote))
     } else if let Some(marker_len) = bullet_len(rest).or_else(|| ordered_len(rest)) {
         // The bullet stays *visible*: hiding it would delete the only thing
@@ -162,7 +167,7 @@ fn content(line: &[char], offset: usize, list: &mut ListLevels, parsed: &mut Par
         // substitute a nicer glyph for it. The spaces in front of it are
         // syntax, though — the level's margin does that job now, and leaving
         // them in would indent a nested item twice over.
-        parsed.push_marker(offset, offset + indent);
+        parsed.push_marker(offset, offset + indent, whole_line);
         let style = Style::ListItem(list.depth(indent));
 
         let after = &rest[marker_len..];
@@ -266,9 +271,10 @@ fn try_code(line: &[char], i: usize, offset: usize, parsed: &mut Parsed) -> Opti
         return None;
     }
     let close = find(line, i + 1, &['`'])?;
-    parsed.push_marker(offset + i, offset + i + 1);
+    let reveal = (offset + i, offset + close + 1);
+    parsed.push_marker(offset + i, offset + i + 1, reveal);
     parsed.push_span(offset + i + 1, offset + close, Style::Code);
-    parsed.push_marker(offset + close, offset + close + 1);
+    parsed.push_marker(offset + close, offset + close + 1, reveal);
     Some(close + 1)
 }
 
@@ -285,9 +291,10 @@ fn try_embed(line: &[char], i: usize, offset: usize, parsed: &mut Parsed) -> Opt
     if close == i + 3 {
         return None; // "![[]]" names nothing.
     }
-    parsed.push_marker(offset + i, offset + i + 3);
+    let reveal = (offset + i, offset + close + 2);
+    parsed.push_marker(offset + i, offset + i + 3, reveal);
     parsed.push_span(offset + i + 3, offset + close, Style::Embed);
-    parsed.push_marker(offset + close, offset + close + 2);
+    parsed.push_marker(offset + close, offset + close + 2, reveal);
     Some(close + 2)
 }
 
@@ -308,9 +315,10 @@ fn try_wikilink(line: &[char], i: usize, offset: usize, parsed: &mut Parsed) -> 
     if display_start >= close {
         return None; // "[[Target|]]" has nothing to show.
     }
-    parsed.push_marker(offset + i, offset + display_start);
+    let reveal = (offset + i, offset + close + 2);
+    parsed.push_marker(offset + i, offset + display_start, reveal);
     parsed.push_span(offset + display_start, offset + close, Style::WikiLink);
-    parsed.push_marker(offset + close, offset + close + 2);
+    parsed.push_marker(offset + close, offset + close + 2, reveal);
     Some(close + 2)
 }
 
@@ -324,9 +332,10 @@ fn try_link(line: &[char], i: usize, offset: usize, parsed: &mut Parsed) -> Opti
         return None;
     }
     let close = find(line, label_end + 2, &[')'])?;
-    parsed.push_marker(offset + i, offset + i + 1);
+    let reveal = (offset + i, offset + close + 1);
+    parsed.push_marker(offset + i, offset + i + 1, reveal);
     parsed.push_span(offset + i + 1, offset + label_end, Style::Link);
-    parsed.push_marker(offset + label_end, offset + close + 1);
+    parsed.push_marker(offset + label_end, offset + close + 1, reveal);
     Some(close + 1)
 }
 
@@ -415,10 +424,11 @@ fn try_both_emphases(line: &[char], i: usize, offset: usize, parsed: &mut Parsed
         return None;
     }
 
-    parsed.push_marker(offset + i, offset + content_start);
+    let reveal = (offset + i, offset + close + 3);
+    parsed.push_marker(offset + i, offset + content_start, reveal);
     parsed.push_span(offset + content_start, offset + close, Style::Bold);
     parsed.push_span(offset + content_start, offset + close, Style::Italic);
-    parsed.push_marker(offset + close, offset + close + 3);
+    parsed.push_marker(offset + close, offset + close + 3, reveal);
     Some(close + 3)
 }
 
@@ -453,9 +463,10 @@ fn try_emphasis(line: &[char], i: usize, offset: usize, parsed: &mut Parsed) -> 
         if !opens || !closes {
             continue;
         }
-        parsed.push_marker(offset + i, offset + content_start);
+        let reveal = (offset + i, offset + close + delimiter.len());
+        parsed.push_marker(offset + i, offset + content_start, reveal);
         parsed.push_span(offset + content_start, offset + close, style);
-        parsed.push_marker(offset + close, offset + close + delimiter.len());
+        parsed.push_marker(offset + close, offset + close + delimiter.len(), reveal);
         return Some(close + delimiter.len());
     }
     None

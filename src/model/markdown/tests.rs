@@ -237,6 +237,64 @@ fn markers_never_overlap_each_other() {
 }
 
 #[test]
+fn every_marker_is_inside_the_construct_that_reveals_it() {
+    // A reveal range that does not contain its own marker would show the
+    // syntax with the caret somewhere else entirely.
+    let source = "# **T** and `c` and [l](u)\n- *i* [[W|x]] ![[f]] #t";
+    for marker in parse(source).markers {
+        assert!(
+            marker.reveal.0 <= marker.start && marker.end <= marker.reveal.1 + 1,
+            "{marker:?} is not inside its own construct"
+        );
+    }
+}
+
+#[test]
+fn a_pair_of_markers_is_revealed_together() {
+    // Otherwise the opening `**` comes back without the closing one, which
+    // reads as unbalanced syntax you did not type.
+    let parsed = parse("a **bold** word");
+    let opening = parsed
+        .markers
+        .iter()
+        .find(|m| m.start == 2)
+        .expect("opener");
+    let closing = parsed
+        .markers
+        .iter()
+        .find(|m| m.start == 8)
+        .expect("closer");
+    assert_eq!(opening.reveal, closing.reveal);
+    for cursor in 2..=10 {
+        assert!(opening.revealed_by(cursor) && closing.revealed_by(cursor));
+    }
+    // And nowhere else on the line.
+    for cursor in [0, 1, 11, 15] {
+        assert!(!opening.revealed_by(cursor), "revealed at {cursor}");
+    }
+}
+
+#[test]
+fn one_construct_revealing_does_not_reveal_its_neighbour() {
+    // The reason the reveal is per-construct rather than per-line.
+    let source = "a **bold** and a [[Link]] here";
+    let parsed = parse(source);
+    let caret = 5; // inside the emphasis
+    let hidden: String = source
+        .chars()
+        .enumerate()
+        .filter(|(index, _)| {
+            !parsed
+                .markers
+                .iter()
+                .any(|m| *index >= m.start && *index < m.end && !m.revealed_by(caret))
+        })
+        .map(|(_, c)| c)
+        .collect();
+    assert_eq!(hidden, "a **bold** and a Link here");
+}
+
+#[test]
 fn parsing_is_stable_under_incremental_typing() {
     // Every prefix of a note gets typed at some point; none may panic.
     let source =

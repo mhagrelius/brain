@@ -31,6 +31,10 @@ pub struct Config {
     pub window_height: Option<i32>,
     #[serde(default)]
     pub window_maximized: bool,
+    /// Whether the last session was reading rather than editing. A mode you
+    /// chose and the app forgot is a mode you have to choose every launch.
+    #[serde(default)]
+    pub reading_mode: bool,
 }
 
 fn default_version() -> u32 {
@@ -156,6 +160,7 @@ mod tests {
             window_width: Some(1100),
             window_height: Some(760),
             window_maximized: false,
+            reading_mode: true,
         };
         config.save(&path).expect("save");
 

@@ -35,7 +35,7 @@ fn a_whole_session() {
     fs::write(
         config_home.join("brain/config.json"),
         format!(
-            r#"{{"version":1,"vault":{:?},"last_note":null}}"#,
+            r#"{{"version":1,"vault":{:?},"last_note":null,"reading_mode":true}}"#,
             vault.to_string_lossy()
         ),
     )
@@ -173,6 +173,19 @@ fn type_into_editor(app: &BrainApplication, text: &str) {
 }
 
 const STEPS: &[Step] = &[
+    (
+        "the window opens in the mode the config remembers",
+        |app, _| {
+            // Restoring the mode reaches back into the config to record it,
+            // and the seeded config here says reading — which is the ordering
+            // that would deadlock if the restore held the config open.
+            let window = app.window().expect("a window");
+            assert!(window.is_reading(), "the remembered mode was not restored");
+
+            // The rest of the session is about editing.
+            window.set_reading(false);
+        },
+    ),
     ("the vault opens with every note listed", |app, _| {
         assert_eq!(app.listed_notes().len(), 3);
     }),
@@ -455,6 +468,7 @@ const STEPS: &[Step] = &[
                 "new-note",
                 "toggle-sidebar",
                 "toggle-backlinks",
+                "toggle-reading",
                 "clear-filter",
                 "reload",
                 "save",
@@ -486,11 +500,13 @@ const STEPS: &[Step] = &[
             for name in [
                 "toggle-sidebar",
                 "toggle-backlinks",
+                "toggle-reading",
                 "clear-filter",
                 "reload",
                 "save",
                 "toggle-sidebar",
                 "toggle-backlinks",
+                "toggle-reading",
             ] {
                 gtk::prelude::WidgetExt::activate_action(&window, &format!("win.{name}"), None)
                     .unwrap_or_else(|_| panic!("win.{name} refused to activate"));
@@ -520,6 +536,23 @@ const STEPS: &[Step] = &[
                 app.remembered_size().map_or(true, |(w, h)| w > 0 && h > 0),
                 "a zero size was recorded"
             );
+        },
+    ),
+    (
+        "the mode the window is in outlives the session",
+        |app, _| {
+            // Reading is a choice about how you work, not about one note; a
+            // mode the app forgets is one you re-choose every launch.
+            let window = app.window().expect("a window");
+            gtk::prelude::WidgetExt::activate_action(&window, "win.toggle-reading", None)
+                .expect("win.toggle-reading");
+            assert!(window.is_reading());
+            assert!(app.remembered_reading(), "reading mode was not recorded");
+
+            gtk::prelude::WidgetExt::activate_action(&window, "win.toggle-reading", None)
+                .expect("win.toggle-reading");
+            assert!(!window.is_reading());
+            assert!(!app.remembered_reading());
         },
     ),
     ("the vault can be pointed somewhere else", |app, vault| {

@@ -40,6 +40,7 @@ mod imp {
         /// Built once and reused, so reopening keeps the last query.
         pub palette: RefCell<Option<Palette>>,
         pub detail: RefCell<Option<adw::OverlaySplitView>>,
+        pub reading_toggle: RefCell<Option<gtk::ToggleButton>>,
         /// Shown when notes are not reaching disk.
         pub banner: RefCell<Option<adw::Banner>>,
     }
@@ -309,6 +310,20 @@ impl BrainWindow {
             .show_sidebar(false)
             .build();
 
+        // Reading mode. Packed before the backlinks toggle so it sits nearest
+        // the note it acts on.
+        let reading_toggle = gtk::ToggleButton::builder()
+            .icon_name("view-reveal-symbolic")
+            .tooltip_text("Reading Mode (Ctrl+E)")
+            .build();
+        reading_toggle.connect_toggled(clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |toggle| window.apply_reading(toggle.is_active())
+        ));
+        content_header.pack_end(&reading_toggle);
+        self.imp().reading_toggle.replace(Some(reading_toggle));
+
         let backlinks_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-right-symbolic")
             .tooltip_text("Details and Backlinks (F10)")
@@ -556,6 +571,14 @@ impl BrainWindow {
         ));
         actions.add_action(&toggle_sidebar);
 
+        let toggle_reading = gtk::gio::SimpleAction::new("toggle-reading", None);
+        toggle_reading.connect_activate(clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, _| window.set_reading(!window.is_reading())
+        ));
+        actions.add_action(&toggle_reading);
+
         let toggle_backlinks = gtk::gio::SimpleAction::new("toggle-backlinks", None);
         toggle_backlinks.connect_activate(clone!(
             #[weak(rename_to = window)]
@@ -651,6 +674,41 @@ impl BrainWindow {
             .is_some_and(|actions| actions.has_action(name))
     }
 
+    /// Whether the note is being read rather than edited.
+    pub fn is_reading(&self) -> bool {
+        self.imp()
+            .reading_toggle
+            .borrow()
+            .as_ref()
+            .is_some_and(gtk::ToggleButton::is_active)
+    }
+
+    /// Switch between reading and editing. Goes through the toggle so the
+    /// header always says which mode you are in, however the mode was changed.
+    pub fn set_reading(&self, reading: bool) {
+        if let Some(toggle) = self.imp().reading_toggle.borrow().as_ref() {
+            toggle.set_active(reading);
+        }
+    }
+
+    /// Put the whole window into a mode: the editor, the formatting buttons,
+    /// and what the next launch will open in.
+    fn apply_reading(&self, reading: bool) {
+        let imp = self.imp();
+        if let Some(editor) = imp.editor.borrow().as_ref() {
+            editor.set_reading(reading);
+            if !reading {
+                editor.grab_focus_to_text();
+            }
+        }
+        if let Some(details) = imp.details.borrow().as_ref() {
+            details.set_formatting_enabled(!reading);
+        }
+        if let Some(app) = self.brain_application() {
+            app.remember_reading(reading);
+        }
+    }
+
     /// Show or hide the backlinks pane, for previews and tests.
     pub fn set_backlinks_shown(&self, shown: bool) {
         if let Some(detail) = self.imp().detail.borrow().as_ref() {
@@ -710,6 +768,7 @@ impl BrainWindow {
             (
                 "View",
                 &[
+                    ("<Control>e", "Switch between reading and editing"),
                     ("F9", "Show or hide the sidebar"),
                     ("F10", "Show or hide backlinks"),
                     ("<Control>q", "Quit"),

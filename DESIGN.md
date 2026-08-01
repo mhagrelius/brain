@@ -65,19 +65,32 @@ grow.
 
 ### Editing
 
-One `GtkTextView`, no modes and no preview pane. You are always looking at the
-source and it is always styled: headings scale up and bold, `**bold**` renders
-bold, code gets a mono face and a background, block quotes get a rule,
-`[[links]]` go blue and follow on click, `#tags` get a chip background.
+One `GtkTextView` and no preview pane. You are always looking at the source and
+it is always styled: headings scale up and bold, `**bold**` renders bold, code
+gets a mono face and a background, block quotes get a rule, `[[links]]` go blue
+and follow on click, `#tags` get a chip background.
 
-**Syntax characters are hidden except in the block the cursor is in.** The
-mechanic is Stickies': one `md-marker` `TextTag` carrying `invisible`, applied
-to every marker span. Stickies toggles that one tag for the whole note on focus,
-which is right for a sticky and wrong for a 3,000-word page, so here the tag is
-invisible throughout and *removed* from the block holding the cursor — two
-`remove_tag`/`apply_tag` calls when the cursor crosses a block boundary, riding
-on the same block-incremental scan described below. Writing a heading, you see
-your `##`; reading the page, you don't.
+**Syntax characters are hidden except in the construct the caret is inside.**
+The mechanic is Stickies': one `md-marker` `TextTag` carrying `invisible`,
+applied to every marker span. Stickies toggles that one tag for the whole note
+on focus, which is right for a sticky and wrong for a window whose editor holds
+focus all day. So the tag is invisible throughout and removed from the markers
+of whatever the caret is in — the scanner gives each marker the extent of its
+own construct, and both halves of a pair share it, so `**` never comes back
+without its partner. A block prefix — the `##`, the `>`, a bullet's indent —
+takes its whole line as that extent instead, since it belongs to the line and
+Backspace at the line start must not delete something invisible.
+
+Editing one construct therefore leaves the rest of the line rendered, which the
+earlier per-line reveal did not: with the caret anywhere on a line, every link
+and every emphasis on it turned back into source.
+
+**Reading mode**, `Ctrl+E`, reveals nothing at all and makes the view
+non-editable with no caret. Still the same widget — switching does not reflow
+or rescroll the note, which is the whole reason there is no second view. It
+also takes the formatting buttons out of service and is remembered across
+launches, and it is why a plain click follows a link there: with no cursor to
+place, the modifier has nothing to disambiguate.
 
 Image embeds are the one exception to "text only": `![[diagram.png]]` keeps its
 source text and gets a `GtkPicture` at a child anchor on the line beneath it.
@@ -241,7 +254,7 @@ Icons, `.desktop`, metainfo, and cargo+bash packaging scripts follow Stickies.
 2. ~~Shell: window, sidebar tree, plain editor, open/save/autosave, new, rename,
    delete, first-run vault picker.~~
 3. ~~Live styling: headings, emphasis, code, fences, quotes, lists, rules,
-   tables, and marker hiding outside the cursor's block.~~
+   tables, and marker hiding outside the caret's construct.~~
 4. ~~Wikilinks: `[[` completion, follow, create-on-follow, backlinks pane,
    rename rewrites inbound links.~~
 5. ~~Tags: sidebar tag tree, filter.~~
@@ -289,6 +302,17 @@ Where the finished thing differs from this document, this is what happened.
   beside the scanner, and a test parses what every button writes to prove the
   scanner styles it: a button that emitted syntax the editor rendered as plain
   prose would be worse than no button.
+- **The reveal is per-construct, and there is a reading mode.** The design said
+  no modes and syntax revealed in the cursor's block, on Stickies' precedent.
+  Stickies could hide everything on focus-out because focus genuinely leaves a
+  sticky; here the editor holds focus for the whole session, so "the cursor's
+  block" meant one full line of raw source on screen at all times, flickering as
+  the caret moved. Two changes: each marker now carries the extent of its own
+  construct and is revealed only from inside that, so editing `**bold**` leaves
+  the link beside it rendered; and `Ctrl+E` switches to reading, where nothing
+  is revealed and the view takes no edits. It is still one widget — the mode
+  changes what the marker tag covers and whether the view is editable, not
+  which widget is on screen, so nothing reflows or rescrolls.
 - **The editor is clamped to a readable measure.** Prose set to the full width
   of a maximised window loses the eye between lines; `AdwClamp` holds it near
   80 characters and centres it, which is what GNOME apps showing a document do.

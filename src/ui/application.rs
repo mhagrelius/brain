@@ -105,6 +105,10 @@ mod imp {
                     window.maximize();
                 }
             }
+            // Outside the borrow above: this reaches back into the config to
+            // record the mode, and would deadlock against it.
+            let reading = self.config.borrow().reading_mode;
+            window.set_reading(reading);
             window.present();
 
             window.set_vault_root(
@@ -240,6 +244,7 @@ impl BrainApplication {
         self.set_accels_for_action("win.toggle-sidebar", &["F9"]);
         self.set_accels_for_action("win.reload", &["<Control>r"]);
         self.set_accels_for_action("win.toggle-backlinks", &["F10"]);
+        self.set_accels_for_action("win.toggle-reading", &["<Control>e"]);
         self.set_accels_for_action("win.quick-open", &["<Control>k"]);
         self.set_accels_for_action("win.search-text", &["<Control><Shift>f"]);
     }
@@ -316,6 +321,16 @@ impl BrainApplication {
                 config.window_height = Some(height);
             }
         }
+    }
+
+    /// Remember which mode the window is in, for the next launch.
+    pub fn remember_reading(&self, reading: bool) {
+        self.imp().config.borrow_mut().reading_mode = reading;
+    }
+
+    /// The mode that would be written to the config.
+    pub fn remembered_reading(&self) -> bool {
+        self.imp().config.borrow().reading_mode
     }
 
     /// The window size that would be written to the config.

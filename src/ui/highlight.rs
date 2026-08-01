@@ -7,9 +7,9 @@
 //!
 //! The **marker** tag is the whole editing model. It carries `invisible`, and
 //! it is applied to every character that is syntax rather than content. So the
-//! note reads as prose while the syntax stays in the file, and revealing it is
-//! one `remove_tag` call over the block the cursor is in — see
-//! [`reveal_markers`].
+//! note reads as prose while the syntax stays in the file, and the syntax of
+//! whatever construct the caret is in comes back for as long as it is there —
+//! see [`reveal_markers`].
 //!
 //! # Colours
 //!
@@ -371,31 +371,38 @@ pub fn apply(buffer: &gtk::TextBuffer, parsed: &Parsed) {
         };
         tag_range(&tag_name(*style), start, *end);
     }
-    for Marker { start, end } in &parsed.markers {
+    for Marker { start, end, .. } in &parsed.markers {
         tag_range(MARKER, *start, *end);
     }
 }
 
-/// Show the syntax characters on the lines the cursor is on, and hide them
-/// everywhere else.
+/// Show the syntax of the construct the cursor is in, and hide it everywhere
+/// else.
 ///
-/// This is the per-block half of the editing model. The marker tag stays
-/// `invisible` globally; what moves is which range carries it.
-pub fn reveal_markers(buffer: &gtk::TextBuffer, parsed: &Parsed, cursor_line: i32) {
+/// `cursor` is a character offset, or `None` in reading mode — where nothing is
+/// revealed, because there is no caret to reveal it for.
+///
+/// This is the editing half of the model. The marker tag stays `invisible`
+/// globally; what moves is which ranges carry it. Every marker is re-applied
+/// each time rather than tracking what was revealed last: it is a handful of
+/// ranges, and the bookkeeping version got it wrong in ways that only showed up
+/// as stale syntax hours later.
+pub fn reveal_markers(buffer: &gtk::TextBuffer, parsed: &Parsed, cursor: Option<usize>) {
     let Some(marker) = buffer.tag_table().lookup(MARKER) else {
         return;
     };
 
-    // Put every marker back, then take them off the one line. Re-applying the
-    // whole set is a handful of ranges and is immune to the bookkeeping bugs
-    // that come of tracking which line was revealed last.
     let length = buffer.char_count();
     buffer.remove_tag(
         &marker,
         &buffer.iter_at_offset(0),
         &buffer.iter_at_offset(length),
     );
-    for Marker { start, end } in &parsed.markers {
+    for span in &parsed.markers {
+        if cursor.is_some_and(|cursor| span.revealed_by(cursor)) {
+            continue;
+        }
+        let Marker { start, end, .. } = span;
         let start = (*start as i32).clamp(0, length);
         let end = (*end as i32).clamp(0, length);
         if end > start {
@@ -405,16 +412,5 @@ pub fn reveal_markers(buffer: &gtk::TextBuffer, parsed: &Parsed, cursor_line: i3
                 &buffer.iter_at_offset(end),
             );
         }
-    }
-
-    if cursor_line < 0 || cursor_line >= buffer.line_count() {
-        return;
-    }
-    let start = buffer.iter_at_line(cursor_line);
-    let end = buffer.iter_at_line(cursor_line + 1);
-    if let (Some(start), Some(end)) = (start, end) {
-        buffer.remove_tag(&marker, &start, &end);
-    } else if let Some(start) = buffer.iter_at_line(cursor_line) {
-        buffer.remove_tag(&marker, &start, &buffer.end_iter());
     }
 }

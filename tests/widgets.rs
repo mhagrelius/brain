@@ -621,6 +621,82 @@ const CASES: &[Case] = &[
             );
         },
     ),
+    (
+        "the caret reveals the syntax it is inside and nothing else",
+        |window, _| {
+            // The whole point of the narrow reveal: editing one construct must
+            // not turn the rest of the line back into source.
+            let id = NoteId::from_relative("A.md");
+            window.show_note(Some((&id, "a **bold** and a [[Link]] here")));
+            let editor = window.editor().expect("an editor");
+
+            editor.place_cursor_at(5);
+            assert_eq!(
+                editor.visible_text_for_test(),
+                "a **bold** and a Link here",
+                "the asterisks under the caret should show, and the brackets should not"
+            );
+
+            editor.place_cursor_at(20);
+            assert_eq!(
+                editor.visible_text_for_test(),
+                "a bold and a [[Link]] here",
+                "the reveal did not move with the caret"
+            );
+
+            // With the caret in the prose between them, nothing is source.
+            editor.place_cursor_at(13);
+            assert_eq!(editor.visible_text_for_test(), "a bold and a Link here");
+        },
+    ),
+    (
+        "a block prefix is revealed by the caret anywhere on its line",
+        |window, _| {
+            // Unlike an inline construct: the hashes belong to the whole
+            // heading, and hiding them while the words are being edited would
+            // make Backspace at the start of the line delete something
+            // invisible.
+            let id = NoteId::from_relative("A.md");
+            window.show_note(Some((&id, "# A heading\n\nprose")));
+            let editor = window.editor().expect("an editor");
+
+            editor.place_cursor_at(9);
+            assert_eq!(editor.visible_text_for_test(), "# A heading\n\nprose");
+
+            editor.place_cursor_at(15);
+            assert_eq!(editor.visible_text_for_test(), "A heading\n\nprose");
+        },
+    ),
+    (
+        "reading mode hides every marker and refuses edits",
+        |window, _| {
+            let id = NoteId::from_relative("A.md");
+            window.show_note(Some((&id, "# Title\n\na **bold** word")));
+            let editor = window.editor().expect("an editor");
+
+            // Caret on the heading, so there is something revealed to lose.
+            editor.place_cursor_at(3);
+            assert!(editor.visible_text_for_test().contains('#'));
+
+            window.set_reading(true);
+            assert!(window.is_reading());
+            assert_eq!(editor.visible_text_for_test(), "Title\n\na bold word");
+
+            // The formatting buttons write Markdown; in reading mode they must
+            // not, however they are reached.
+            let before = editor.body();
+            editor.apply_format(Format::Italic);
+            assert_eq!(editor.body(), before, "reading mode accepted an edit");
+
+            window.set_reading(false);
+            assert!(!window.is_reading());
+            editor.place_cursor_at(3);
+            assert!(
+                editor.visible_text_for_test().contains('#'),
+                "leaving reading mode did not bring the syntax back"
+            );
+        },
+    ),
 ];
 
 /// Cases that need no window, kept here so they run on the GTK thread too.

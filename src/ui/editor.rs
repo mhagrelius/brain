@@ -50,8 +50,17 @@ mod imp {
         /// Line count at the last scan, to tell an in-line edit from one that
         /// added or removed a line.
         pub lines: Cell<i32>,
-        /// The line whose markers are currently revealed.
-        pub revealed: Cell<i32>,
+        /// The cursor offset the current reveal was computed for, so a caret
+        /// move that stays inside the same construct does no work. `None` when
+        /// nothing has been revealed yet.
+        pub revealed: Cell<Option<usize>>,
+        /// Reading mode: no caret, no editing, and no syntax anywhere.
+        pub reading: Cell<bool>,
+        /// Whether a note is open at all. Both this and `reading` have to be
+        /// right for the view to accept typing, and each is set by a different
+        /// part of the app, so neither may write the view's `editable`
+        /// directly.
+        pub has_note: Cell<bool>,
         /// How many times the whole buffer has been re-scanned. Only read by
         /// tests, which would otherwise pass just as happily against an editor
         /// that escalated every keystroke and made the cache pointless.
@@ -200,15 +209,15 @@ impl Editor {
             }
         ));
 
-        // Moving the caret across a block boundary is what hides the syntax
-        // behind you and shows the syntax ahead.
+        // Moving the caret out of a construct is what hides its syntax again,
+        // and moving into the next one is what shows that.
         buffer.connect_notify_local(
             Some("cursor-position"),
             clone!(
                 #[weak(rename_to = editor)]
                 self,
                 move |_, _| {
-                    editor.update_revealed_line(false);
+                    editor.update_revealed(false);
                     // Clicking or arrowing out of the brackets abandons the
                     // completion, rather than leaving a list pointing at text
                     // the cursor has left.
@@ -416,10 +425,12 @@ impl Editor {
             #[weak]
             view,
             move |gesture, _, x, y| {
-                if !gesture
+                // In reading mode there is no cursor to place, so the reason
+                // for the modifier is gone and a plain click follows the link.
+                let modified = gesture
                     .current_event_state()
-                    .contains(gtk::gdk::ModifierType::CONTROL_MASK)
-                {
+                    .contains(gtk::gdk::ModifierType::CONTROL_MASK);
+                if !modified && !editor.is_reading() {
                     return;
                 }
                 let (bx, by) =
@@ -751,8 +762,8 @@ impl Editor {
 
         highlight::clear(&buffer, from, to);
         highlight::apply(&buffer, &scanned);
-        imp.revealed.set(-1);
-        self.update_revealed_line(true);
+        imp.revealed.set(None);
+        self.update_revealed(true);
         self.refresh_embeds();
     }
 
@@ -773,21 +784,55 @@ impl Editor {
         let imp = self.imp();
         imp.parsed.replace(parsed);
         imp.lines.set(buffer.line_count());
-        imp.revealed.set(-1);
-        self.update_revealed_line(true);
+        imp.revealed.set(None);
+        self.update_revealed(true);
         self.refresh_embeds();
     }
 
-    /// Show the syntax on the cursor's line and hide it everywhere else.
-    fn update_revealed_line(&self, force: bool) {
+    /// Show the syntax of the construct the caret is in, and hide it
+    /// everywhere else.
+    ///
+    /// Skipped when the caret has not moved since the last reveal, because
+    /// this runs on every keystroke as well as every arrow key.
+    fn update_revealed(&self, force: bool) {
         let imp = self.imp();
-        let line = self.cursor_line();
-        if !force && imp.revealed.get() == line {
+        let cursor = self.cursor_offset();
+        if !force && imp.revealed.get() == Some(cursor) {
             return;
         }
-        imp.revealed.set(line);
+        imp.revealed.set(Some(cursor));
+        let at = (!imp.reading.get()).then_some(cursor);
         let buffer = self.view().buffer();
-        highlight::reveal_markers(&buffer, &imp.parsed.borrow(), line);
+        highlight::reveal_markers(&buffer, &imp.parsed.borrow(), at);
+    }
+
+    /// Whether the note is being read rather than edited.
+    pub fn is_reading(&self) -> bool {
+        self.imp().reading.get()
+    }
+
+    /// Switch between reading and editing.
+    ///
+    /// Reading mode is not just "hide the syntax": the view stops being
+    /// editable and loses its caret. Typing into markup you cannot see is how
+    /// you break a link without noticing, and a caret sitting in text that
+    /// will not accept it is a lie about what the app is doing.
+    pub fn set_reading(&self, reading: bool) {
+        let imp = self.imp();
+        if imp.reading.replace(reading) == reading {
+            return;
+        }
+        self.apply_editability();
+        self.close_completion();
+        self.update_revealed(true);
+    }
+
+    fn apply_editability(&self) {
+        let imp = self.imp();
+        let editable = imp.has_note.get() && !imp.reading.get();
+        let view = self.view();
+        view.set_editable(editable);
+        view.set_cursor_visible(editable);
     }
 
     fn cursor_line(&self) -> i32 {
@@ -849,6 +894,11 @@ impl Editor {
     /// between `begin_user_action` and `end_user_action`, so Ctrl+Z takes the
     /// whole formatting back rather than one bracket at a time.
     pub fn apply_format(&self, format: Format) {
+        // The formatting buttons are insensitive while reading, but an
+        // accelerator or a test can still get here.
+        if self.imp().reading.get() {
+            return;
+        }
         let view = self.view();
         let buffer = view.buffer();
         buffer.begin_user_action();
@@ -1080,6 +1130,32 @@ impl Editor {
         self.accept_completion(chosen);
     }
 
+    /// Put the caret at a character offset, for tests and previews.
+    pub fn place_cursor_at(&self, offset: usize) {
+        let buffer = self.view().buffer();
+        buffer.place_cursor(&buffer.iter_at_offset(offset as i32));
+    }
+
+    /// The note as it reads on screen, with the hidden syntax left out.
+    ///
+    /// Asserting on this rather than on which tag sits where is the point:
+    /// what matters is what a reader sees, not how it was achieved.
+    pub fn visible_text_for_test(&self) -> String {
+        let buffer = self.view().buffer();
+        let Some(marker) = buffer.tag_table().lookup(highlight::MARKER) else {
+            return self.body();
+        };
+        let mut visible = String::new();
+        let mut iter = buffer.start_iter();
+        while !iter.is_end() {
+            if !iter.has_tag(&marker) {
+                visible.push(iter.char());
+            }
+            iter.forward_char();
+        }
+        visible
+    }
+
     /// Type `text` at a character offset, as a user would.
     ///
     /// Exists so `tests/widgets.rs` can drive the incremental re-scan through
@@ -1107,10 +1183,10 @@ impl Editor {
     /// Whether there is anything to edit. An editor with no note open is shown
     /// but not typeable, rather than swapped for a placeholder — swapping loses
     /// the scroll position and the focus ring.
+    /// Whether a note is open. Reading mode can still take editing away.
     pub fn set_editable(&self, editable: bool) {
-        let view = self.view();
-        view.set_editable(editable);
-        view.set_cursor_visible(editable);
+        self.imp().has_note.set(editable);
+        self.apply_editability();
     }
 
     /// Words in the buffer, for the status line.

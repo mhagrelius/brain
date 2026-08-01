@@ -33,8 +33,15 @@ existing folder of Markdown files if you have one.
 
 **The editor shows source, always styled.** Headings scale up, `**bold**`
 renders bold, tables line up in a monospace grid. The syntax characters are
-hidden except on the line the cursor is on — so a note reads as prose while
-staying plain text on disk. There is no read mode to switch into.
+hidden except in the construct the caret is inside — put it in `**bold**` and
+its asterisks come back, while the link later on the same line stays rendered.
+So a note reads as prose while staying plain text on disk.
+
+**Reading mode.** `Ctrl+E`, or the eye in the header, hides the syntax
+everywhere and stops the note accepting edits. There is no second widget and no
+preview pane: it is the same view with the caret taken away, so the scroll
+position never moves. In reading mode a plain click follows a link, since
+there is no cursor to place.
 
 **Links.** `[[` opens a completion over note titles and aliases. `Ctrl+Click`
 or `Ctrl+Return` follows a link; following one that points nowhere offers to
@@ -52,7 +59,8 @@ list.
 of every note, with the match shown in context.
 
 **Details.** `F10` opens a pane with the note's properties and a set of
-formatting buttons, each showing the syntax it writes.
+formatting buttons, each showing the syntax it writes. They grey out while you
+are reading.
 
 Frontmatter is optional. Only `tags`, `aliases`, `created` and `updated` are
 understood, and **everything else is preserved verbatim** — a note written by

@@ -77,11 +77,34 @@ fn main() {
         .expect("the seeded note");
     editor.load(&note.to_text());
     editor.set_editable(true);
+    // Caret inside the emphasis on the first line of prose, so the picture
+    // shows what editing looks like: that construct's asterisks are back and
+    // nothing else on the line is.
+    let body = note.to_text();
+    if let Some(at) = body.find("destructive") {
+        editor.place_cursor_at(body[..at].chars().count() + 2);
+    }
     render(
         &editor,
         640,
         940,
         &format!("{out}/editor-{}.png", scheme(dark)),
+    );
+
+    // The same note being read rather than edited: no syntax anywhere, no
+    // caret. A second editor rather than a mode switch on the first, because
+    // `render` grows the window until the widget draws and a widget that has
+    // already been sized skips that, giving a picture of the top of the note.
+    let reading = Editor::new();
+    reading.set_vault_root(Some(vault.root().to_path_buf()));
+    reading.load(&note.to_text());
+    reading.set_editable(true);
+    reading.set_reading(true);
+    render(
+        &reading,
+        640,
+        940,
+        &format!("{out}/editor-reading-{}.png", scheme(dark)),
     );
 
     // The backlinks pane, against the real index rather than made-up rows.

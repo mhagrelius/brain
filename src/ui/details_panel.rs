@@ -41,6 +41,7 @@ mod imp {
         pub stack: RefCell<Option<gtk::Stack>>,
         pub title: RefCell<Option<gtk::Label>>,
         pub properties: RefCell<Option<adw::PreferencesGroup>>,
+        pub formatting: RefCell<Option<adw::PreferencesGroup>>,
         pub rows: RefCell<Vec<adw::ActionRow>>,
     }
 
@@ -184,7 +185,16 @@ impl DetailsPanel {
 
         self.imp().stack.replace(Some(stack));
         self.imp().properties.replace(Some(properties));
+        self.imp().formatting.replace(Some(formatting));
         self.imp().rows.replace(rows);
+    }
+
+    /// Grey the formatting out, for reading mode: buttons that write Markdown
+    /// into a note that will not accept it would be lying.
+    pub fn set_formatting_enabled(&self, enabled: bool) {
+        if let Some(group) = self.imp().formatting.borrow().as_ref() {
+            group.set_sensitive(enabled);
+        }
     }
 
     /// One formatting button: what it does, and the syntax it writes.

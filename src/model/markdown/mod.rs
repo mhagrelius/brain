@@ -3,11 +3,12 @@
 //! # What this is for
 //!
 //! Notes are always shown as source and always styled. The syntax characters
-//! are hidden everywhere except in the block holding the cursor, which is one
-//! `GtkTextView` throughout — not two widgets swapped — so the cursor lands
+//! are hidden everywhere except in the construct holding the caret, which is
+//! one `GtkTextView` throughout — not two widgets swapped — so the cursor lands
 //! where you clicked and the scroll position never jumps. The view achieves it
 //! by applying tags for style and marking the syntax characters with a tag
-//! whose `invisible` property is removed from the cursor's block.
+//! whose `invisible` property is removed from the markers the caret is inside.
+//! Reading mode is the same view with nothing revealed at all.
 //!
 //! So this scanner has an unusual requirement: as well as *what* is styled, it
 //! must report exactly **which characters are syntax**, so they can be hidden.
@@ -136,11 +137,25 @@ pub struct Span {
 }
 
 /// A run of characters that is syntax rather than content, and is hidden unless
-/// the cursor is in this block.
+/// the cursor is in the construct it belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Marker {
     pub start: usize,
     pub end: usize,
+    /// The construct this marker punctuates: the `**bold**` it opens, the
+    /// heading line its hashes begin. The cursor inside this range brings the
+    /// marker back — both halves of a pair together, since they share it.
+    ///
+    /// Bounds are inclusive at both ends, so a caret resting immediately
+    /// before the opening delimiter or immediately after the closing one still
+    /// reveals it. Without that you cannot see what you are about to type into.
+    pub reveal: (usize, usize),
+}
+
+impl Marker {
+    pub fn revealed_by(&self, cursor: usize) -> bool {
+        cursor >= self.reveal.0 && cursor <= self.reveal.1
+    }
 }
 
 /// What a line's meaning depends on before its first character is read.
@@ -178,9 +193,11 @@ impl Parsed {
         }
     }
 
-    pub(crate) fn push_marker(&mut self, start: usize, end: usize) {
+    /// `reveal` is the extent of the construct the marker belongs to; see
+    /// [`Marker::reveal`].
+    pub(crate) fn push_marker(&mut self, start: usize, end: usize, reveal: (usize, usize)) {
         if end > start {
-            self.markers.push(Marker { start, end });
+            self.markers.push(Marker { start, end, reveal });
         }
     }
 }
