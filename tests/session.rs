@@ -6,9 +6,12 @@
 
 use std::fs;
 
+use brain::model::bm25::Bm25;
 use brain::model::index::{Index, Resolution};
 use brain::model::markdown;
 use brain::model::note::NoteId;
+use brain::model::search;
+use brain::model::semantic::{self, Embedder};
 use brain::model::vault::Vault;
 
 fn vault() -> (tempfile::TempDir, Vault) {
@@ -49,6 +52,257 @@ fn rename(vault: &Vault, index: &mut Index, from: &NoteId, to: &NoteId) {
         vault.write(&note).expect("write");
         index.update(&note);
     }
+}
+
+/// An embedder with no server behind it.
+///
+/// The vector is the note's word counts over a fixed vocabulary — enough for
+/// "the same text embeds the same way, different text does not", which is all
+/// the catch-up logic depends on. Every call is counted, so a test can assert
+/// what a change *cost*, which is the property that separates a move from a
+/// re-embed.
+struct Counting {
+    calls: std::cell::Cell<usize>,
+}
+
+impl Counting {
+    fn new() -> Self {
+        Self {
+            calls: std::cell::Cell::new(0),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.get()
+    }
+}
+
+impl semantic::Embedder for Counting {
+    fn model(&self) -> String {
+        "counting-fake".to_string()
+    }
+
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, semantic::EmbedError> {
+        self.calls.set(self.calls.get() + texts.len());
+        Ok(texts
+            .iter()
+            .map(|text| {
+                let lowered = text.to_lowercase();
+                ["ownership", "borrow", "sourdough", "meeting"]
+                    .iter()
+                    .map(|word| lowered.matches(word).count() as f32 + 0.05)
+                    .collect()
+            })
+            .collect())
+    }
+}
+
+/// Catch the vectors up with what is on disk *right now*, the way the
+/// application does after any rescan.
+fn catch_up(vault: &Vault, store: &mut semantic::Store, embedder: &Counting) -> semantic::Report {
+    let index = open(vault);
+    semantic::catch_up(store, &index, embedder)
+}
+
+/// The whole point of the exercise: a vault that is edited from both sides.
+///
+/// Brain is not the only thing that touches these files — a terminal, a sync
+/// client and another editor all do — so every step here is deliberately split
+/// between changes made *through the vault API*, as the app makes them, and
+/// changes made *behind its back* with `std::fs`, as everything else does. The
+/// store has to end up in the same state either way, because it never finds out
+/// which happened.
+#[test]
+fn the_vectors_keep_up_with_a_vault_edited_from_inside_and_outside() {
+    let (directory, vault) = vault();
+    let root = directory.path();
+    let embedder = Counting::new();
+    let mut store = semantic::Store::default();
+
+    for (path, body) in [
+        ("Ownership.md", "# Ownership\n\nMoves are destructive.\n"),
+        ("Borrowing.md", "# Borrowing\n\nOne mutable borrow.\n"),
+        ("Sourdough.md", "# Sourdough\n\nHydration is 75%.\n"),
+    ] {
+        vault.create(&id(path), body).expect("create");
+    }
+
+    // First pass: everything is new.
+    let first = catch_up(&vault, &mut store, &embedder);
+    assert_eq!(first.embedded, 3);
+    assert_eq!(store.len(), 3);
+    let after_first = embedder.calls();
+
+    // A quiet vault costs nothing, which is what makes it safe to run this
+    // after every rescan.
+    assert!(catch_up(&vault, &mut store, &embedder).is_quiet());
+    assert_eq!(embedder.calls(), after_first);
+
+    // ---- edited outside Brain, by another editor or a sync client ----
+    fs::write(
+        root.join("Sourdough.md"),
+        "# Sourdough\n\nHydration is 80% now.\n",
+    )
+    .expect("write behind the app's back");
+    let report = catch_up(&vault, &mut store, &embedder);
+    assert_eq!(report.embedded, 1, "only the edited note was re-embedded");
+    assert_eq!(embedder.calls(), after_first + 1);
+
+    // ---- moved outside Brain: `mv` in a terminal ----
+    fs::create_dir_all(root.join("Baking")).expect("mkdir");
+    fs::rename(root.join("Sourdough.md"), root.join("Baking/Sourdough.md")).expect("mv");
+    let calls = embedder.calls();
+    let report = catch_up(&vault, &mut store, &embedder);
+    assert_eq!(report.moved, 1);
+    assert_eq!(report.embedded, 0);
+    assert_eq!(embedder.calls(), calls, "a move must not call the model");
+    assert!(store.contains(&id("Baking/Sourdough.md")));
+    assert!(
+        !store.contains(&id("Sourdough.md")),
+        "the old id was pruned"
+    );
+
+    // ---- moved inside Brain: a drag in the sidebar ----
+    vault
+        .create_folder("Rust")
+        .expect("the folder a note is dragged into");
+    vault
+        .rename(&id("Borrowing.md"), &id("Rust/Borrowing.md"))
+        .expect("move");
+    let calls = embedder.calls();
+    let report = catch_up(&vault, &mut store, &embedder);
+    assert_eq!(report.moved, 1);
+    assert_eq!(embedder.calls(), calls);
+    assert!(store.contains(&id("Rust/Borrowing.md")));
+
+    // ---- renamed inside Brain ----
+    //
+    // Unlike a move, a rename changes the title, and the title is part of what
+    // was embedded — so this one *does* cost a call. Getting it back for free
+    // would mean a note found under a name it no longer has.
+    vault
+        .rename(&id("Ownership.md"), &id("Ownership and moves.md"))
+        .expect("rename");
+    let calls = embedder.calls();
+    let report = catch_up(&vault, &mut store, &embedder);
+    assert_eq!(report.embedded, 1);
+    assert_eq!(report.dropped, 1);
+    assert!(embedder.calls() > calls);
+    assert!(store.contains(&id("Ownership and moves.md")));
+    assert!(!store.contains(&id("Ownership.md")));
+
+    // ---- deleted outside Brain: `rm` ----
+    fs::remove_file(root.join("Baking/Sourdough.md")).expect("rm");
+    let report = catch_up(&vault, &mut store, &embedder);
+    assert_eq!(report.dropped, 1);
+    assert!(!store.contains(&id("Baking/Sourdough.md")));
+
+    // Nothing is stranded: the store holds exactly what the vault holds.
+    let index = open(&vault);
+    let live: std::collections::BTreeSet<&NoteId> = index.ids().collect();
+    let held: std::collections::BTreeSet<&NoteId> = store.ids().collect();
+    assert_eq!(live, held);
+    assert_eq!(store.len(), 2);
+}
+
+/// A vault that changed while the app was not running.
+///
+/// The store is written to a cache file and read back, which is what a restart
+/// is. Everything that happened in between happened to files, and the planner
+/// has to work it out from what it finds — there is no journal to replay.
+#[test]
+fn a_restart_catches_up_on_everything_that_happened_while_it_was_shut() {
+    let (directory, vault) = vault();
+    let root = directory.path();
+    let cache = directory.path().join("cache/vectors.json");
+    let embedder = Counting::new();
+
+    for (path, body) in [
+        ("A.md", "# A\n\nOwnership.\n"),
+        ("B.md", "# B\n\nBorrow.\n"),
+        ("C.md", "# C\n\nSourdough.\n"),
+    ] {
+        vault.create(&id(path), body).expect("create");
+    }
+
+    let mut store = semantic::Store::default();
+    catch_up(&vault, &mut store, &embedder);
+    store.save(&cache).expect("save");
+    let before = embedder.calls();
+
+    // The app is closed. Meanwhile: one note edited, one moved, one deleted,
+    // and one appears from nowhere — a sync client's morning, in other words.
+    fs::write(root.join("A.md"), "# A\n\nOwnership, rewritten.\n").expect("edit");
+    fs::create_dir_all(root.join("Archive")).expect("mkdir");
+    fs::rename(root.join("B.md"), root.join("Archive/B.md")).expect("mv");
+    fs::remove_file(root.join("C.md")).expect("rm");
+    fs::write(root.join("D.md"), "# D\n\nA meeting.\n").expect("new note");
+
+    let mut restarted = semantic::Store::load(&cache);
+    assert_eq!(restarted.len(), 3, "the cache came back");
+
+    let report = catch_up(&vault, &mut restarted, &embedder);
+    assert_eq!(report.embedded, 2, "the edited note and the new one");
+    assert_eq!(report.moved, 1, "the moved one cost nothing");
+    assert_eq!(report.dropped, 1, "the deleted one is gone");
+    assert_eq!(
+        embedder.calls(),
+        before + 2,
+        "a restart must not re-embed the whole vault"
+    );
+
+    let index = open(&vault);
+    let live: std::collections::BTreeSet<&NoteId> = index.ids().collect();
+    let held: std::collections::BTreeSet<&NoteId> = restarted.ids().collect();
+    assert_eq!(live, held);
+}
+
+/// Search over a vault that has been through all that.
+///
+/// The store is only worth keeping level if what comes out of it is right, so
+/// this asserts the end of the pipeline: a note that moved is still found, at
+/// its new path, and a note that was deleted is not found at all.
+#[test]
+fn what_moved_is_still_findable_and_what_was_deleted_is_not() {
+    let (directory, vault) = vault();
+    let root = directory.path();
+    let embedder = Counting::new();
+    let mut store = semantic::Store::default();
+
+    vault
+        .create(
+            &id("Ownership.md"),
+            "# Ownership\n\nMoves are destructive.\n",
+        )
+        .expect("create");
+    vault
+        .create(&id("Sourdough.md"), "# Sourdough\n\nHydration and crumb.\n")
+        .expect("create");
+    catch_up(&vault, &mut store, &embedder);
+
+    fs::create_dir_all(root.join("Rust")).expect("mkdir");
+    fs::rename(root.join("Ownership.md"), root.join("Rust/Ownership.md")).expect("mv");
+    fs::remove_file(root.join("Sourdough.md")).expect("rm");
+    catch_up(&vault, &mut store, &embedder);
+
+    let index = open(&vault);
+    let lexical = Bm25::build(&index);
+    let query = embedder
+        .embed(&["ownership".to_string()])
+        .expect("embed")
+        .remove(0);
+
+    let hits = search::hybrid(&index, &lexical, Some((&store, &query)), "ownership", 5);
+    let found: Vec<&str> = hits.iter().map(|hit| hit.id.as_str()).collect();
+    assert_eq!(found, ["Rust/Ownership.md"]);
+
+    // And the deleted note cannot come back as a hit that opens nothing.
+    let stale = embedder
+        .embed(&["sourdough".to_string()])
+        .expect("embed")
+        .remove(0);
+    let hits = search::hybrid(&index, &lexical, Some((&store, &stale)), "sourdough", 5);
+    assert!(hits.is_empty(), "{hits:?}");
 }
 
 #[test]
