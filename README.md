@@ -29,10 +29,10 @@ unreadable to `cat`.
   title, and `Ctrl+Shift+F` searches every note's text with the match in
   context.
 - **Hybrid search, if you run a model.** `Ctrl+Shift+F` also searches by
-  *meaning*: BM25 over the words fused with embeddings from a local llama.cpp
-  server, so "why is my bread so flat" finds the note about hydration that never
-  says either word. Off by keeping no server; nothing leaves the machine when
-  you do run one.
+  *meaning*: BM25 over the words fused with embeddings from a llama.cpp server
+  you point it at, so "why is my bread so flat" finds the note about hydration
+  that never says either word. No server, no vectors — search is the words alone
+  and nothing is sent anywhere.
 - **Attachments.** Drop a file or paste an image and it is copied into
   `attachments/` and embedded, drawn inline at its own shape.
 - **Formatting and properties.** `F10` opens a pane with the note's properties
@@ -129,6 +129,19 @@ Brain looks for it on `127.0.0.1:8081`; `embedding_url` in
 `~/.config/brain/config.json` points it elsewhere, and an empty string turns the
 whole thing off. With no server reachable, search is the words alone — that is a
 supported state, not a broken one.
+
+The server does not have to be this machine, and a small always-on box is a
+better home for it than a desktop whose GPU comes down for games. Measured
+against a Xeon D-1527 NAS over Tailscale: 38 ms to embed a query, and 180 ms to
+embed a changed note, against 5 ms and 10 ms on a desktop CPU. Only the first
+pass over an existing vault is slow — about 90 seconds per 500 notes there — and
+it runs in the background and resumes if interrupted. **Point it somewhere and
+your notes' text goes there**, so point it at something you own.
+
+Keep the model's alias (`-a`) identical wherever you serve it. Brain keys its
+cache on the name the server reports, so the same model under two names looks
+like two models and re-embeds the vault; under the same name, the cache is
+portable and you can move the server without paying for it again.
 
 Notes are embedded a few seconds after they change, in the background, and the
 vectors are cached under `~/.cache/brain/`. Nothing is written into the vault,

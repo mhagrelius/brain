@@ -1,10 +1,17 @@
-//! Vectors from a local llama.cpp server.
+//! Vectors from a llama.cpp server.
 //!
 //! The only socket Brain opens. It talks to `llama-server` started with
 //! `--embeddings`, over the OpenAI-shaped `/v1/embeddings` route, on the
-//! loopback address by default — a note is the most private thing a person
-//! owns, and the whole point of a local model is that its text does not leave
-//! the machine.
+//! loopback address unless told otherwise.
+//!
+//! **Note text goes to whatever this is pointed at**, which is the whole reason
+//! it is a plain URL and defaults to a port on this machine: a note is the most
+//! private thing a person owns, and where its text is allowed to go should be a
+//! decision, taken once, in a config file — not a property of a hosted service
+//! that changed under you. A box on your own network is a reasonable answer and
+//! a NAS over Tailscale is the one this was built against; an endpoint on the
+//! open internet would work too, and is exactly what nobody should reach for
+//! without meaning it.
 //!
 //! # Why this is blocking, on a thread
 //!
