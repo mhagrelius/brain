@@ -45,6 +45,21 @@
   border-radius: 6px;
 }
 
+/* The strip below the note list, which means the vault root. It is only drawn
+ * while a drag is in the air; the rest of the time it is the pane's bottom
+ * padding and nothing else. */
+.root-strip {
+  /* Held whether or not the drag outline is showing, so the strip never
+   * changes size mid-drag and shoves the rows the drag was aimed at. */
+  border: 1px dashed transparent;
+  border-radius: 6px;
+  padding: 4px;
+}
+
+.root-strip.root-drop {
+  border-color: alpha(currentColor, 0.35);
+}
+
 /* An embedded image, drawn beneath the line naming it. The hairline keeps a
  * screenshot with a white background from bleeding into the page. */
 .embed-image {

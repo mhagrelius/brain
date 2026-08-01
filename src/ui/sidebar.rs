@@ -50,6 +50,10 @@ mod imp {
         pub list: RefCell<Option<gtk::ListView>>,
         pub stack: RefCell<Option<gtk::Stack>>,
         pub menu: RefCell<Option<gtk::PopoverMenu>>,
+        /// The strip under the list that means the vault root, and the label on
+        /// it that only says so while something is being dragged.
+        pub root_strip: RefCell<Option<gtk::Box>>,
+        pub root_label: RefCell<Option<gtk::Label>>,
         /// The note menu, kept so the popover can be put back to it after a
         /// folder row has borrowed the popover for its own.
         pub note_menu: RefCell<Option<gtk::gio::Menu>>,
@@ -352,21 +356,31 @@ impl Sidebar {
         // Dropping in the space below the rows means the vault root. The row
         // targets take everything that lands on a row, so this only ever sees
         // a drop that missed.
-        let root_drop = gtk::DropTarget::new(String::static_type(), gtk::gdk::DragAction::MOVE);
-        root_drop.connect_drop(clone!(
-            #[weak(rename_to = sidebar)]
-            self,
-            #[upgrade_or]
-            false,
-            move |_, value, _, _| {
-                let Ok(payload) = value.get::<String>() else {
-                    return false;
-                };
-                sidebar.emit_by_name::<()>("moved", &[&payload, &String::new()]);
-                true
-            }
-        ));
-        scroller.add_controller(root_drop);
+        scroller.add_controller(self.root_drop_target(None));
+
+        // …but a tree taller than the pane leaves no such space, and then there
+        // is no way to drag a note back out to the root at all. This strip is
+        // pinned below the scroller so the root is always a target, whatever
+        // the list is doing. It keeps its height when idle rather than
+        // appearing mid-drag, since a strip that grows under the pointer moves
+        // the rows the drag was aimed at.
+        let root_label = gtk::Label::new(None);
+        root_label.add_css_class("dimmed");
+        root_label.add_css_class("caption");
+        let root_strip = gtk::Box::builder()
+            .halign(gtk::Align::Fill)
+            .margin_start(6)
+            .margin_end(6)
+            .margin_bottom(6)
+            .build();
+        root_strip.add_css_class("root-strip");
+        root_strip.append(&root_label);
+        root_label.set_hexpand(true);
+        root_strip.add_controller(self.root_drop_target(Some(&root_strip)));
+
+        let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        column.append(&scroller);
+        column.append(&root_strip);
 
         // No button and no icon here. The + directly above this is one
         // affordance for writing a note and the content pane's button is
@@ -385,7 +399,7 @@ impl Sidebar {
         no_results.add_css_class("compact");
 
         let stack = gtk::Stack::new();
-        stack.add_named(&scroller, Some("list"));
+        stack.add_named(&column, Some("list"));
         stack.add_named(&empty, Some("empty"));
         stack.add_named(&no_results, Some("no-results"));
         stack.set_parent(self);
@@ -407,6 +421,62 @@ impl Sidebar {
         self.imp().stack.replace(Some(stack));
         self.imp().menu.replace(Some(menu));
         self.imp().note_menu.replace(Some(note_menu));
+        self.imp().root_strip.replace(Some(root_strip));
+        self.imp().root_label.replace(Some(root_label));
+    }
+
+    /// A target that moves whatever is dropped on it to the vault root.
+    fn root_drop_target(&self, highlight: Option<&gtk::Box>) -> gtk::DropTarget {
+        let target = gtk::DropTarget::new(String::static_type(), gtk::gdk::DragAction::MOVE);
+        if let Some(strip) = highlight {
+            target.connect_enter(clone!(
+                #[weak]
+                strip,
+                #[upgrade_or]
+                gtk::gdk::DragAction::empty(),
+                move |_, _, _| {
+                    strip.add_css_class("drop-into");
+                    gtk::gdk::DragAction::MOVE
+                }
+            ));
+            target.connect_leave(clone!(
+                #[weak]
+                strip,
+                move |_| strip.remove_css_class("drop-into")
+            ));
+        }
+        target.connect_drop(clone!(
+            #[weak(rename_to = sidebar)]
+            self,
+            #[upgrade_or]
+            false,
+            move |_, value, _, _| {
+                let Ok(payload) = value.get::<String>() else {
+                    return false;
+                };
+                sidebar.emit_by_name::<()>("moved", &[&payload, &String::new()]);
+                true
+            }
+        ));
+        target
+    }
+
+    /// Name the root strip while a drag is in the air, and only then: an
+    /// instruction standing there permanently is noise in a 300px column, but
+    /// an unlabelled strip is not a target anyone would find.
+    fn set_dragging(&self, dragging: bool) {
+        let imp = self.imp();
+        if let Some(label) = imp.root_label.borrow().as_ref() {
+            label.set_text(if dragging { "Move to Vault Root" } else { "" });
+        }
+        if let Some(strip) = imp.root_strip.borrow().as_ref() {
+            if dragging {
+                strip.add_css_class("root-drop");
+            } else {
+                strip.remove_css_class("root-drop");
+                strip.remove_css_class("drop-into");
+            }
+        }
     }
 
     /// Report what was activated. A folder opens or closes; a note is opened.
@@ -438,12 +508,22 @@ impl Sidebar {
         // The row itself is the drag icon, so what is being moved is never in
         // doubt while it is in the air.
         source.connect_drag_begin(clone!(
+            #[weak(rename_to = sidebar)]
+            self,
             #[weak]
             row,
             move |source, _| {
                 let paintable = gtk::WidgetPaintable::new(Some(&row));
                 source.set_icon(Some(&paintable), 0, 0);
+                sidebar.set_dragging(true);
             }
+        ));
+        // `drag-end` fires whether the drop landed or was cancelled, so the
+        // strip cannot be left labelled with nothing in the air.
+        source.connect_drag_end(clone!(
+            #[weak(rename_to = sidebar)]
+            self,
+            move |_, _, _| sidebar.set_dragging(false)
         ));
         row.add_controller(source);
     }
@@ -724,6 +804,14 @@ impl Sidebar {
                 }
             })
             .collect()
+    }
+
+    /// What the root strip says, and whether it is on screen at all, for tests.
+    pub fn root_strip_for_test(&self, dragging: bool) -> Option<(bool, String)> {
+        self.set_dragging(dragging);
+        let strip = self.imp().root_strip.borrow().clone()?;
+        let label = self.imp().root_label.borrow().clone()?;
+        Some((strip.is_visible(), label.text().to_string()))
     }
 
     /// Drive a drop the way the drag would, for tests.

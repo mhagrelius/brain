@@ -54,8 +54,9 @@ pane lists what links here.
 
 **The folder tree.** The sidebar is the vault's own folders. Drag a note onto a
 folder to move it — that is a file rename and nothing else, and links keep
-working because they resolve by title. Drag a folder to move it whole, or into
-the space below the rows to bring it out to the root. Right-click a note — or
+working because they resolve by title. Drag a folder to move it whole, or drop
+either onto the strip below the list — it names itself while a drag is in the
+air — to bring it back out to the vault root. Right-click a note — or
 press `Shift+F10` on it — for rename and delete; right-click a folder for a new
 note or subfolder inside it, or to rename or remove it. A folder is only
 removed once it is empty, so "delete the folder" never means "delete the

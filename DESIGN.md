@@ -129,6 +129,14 @@ source of truth about the vault, drifting the moment anything touches the notes
 from outside, and folders that reshuffle by date are folders you cannot learn —
 so folders stay alphabetical whatever the notes are sorted by.
 
+Because order is a sort, a drag can only ever mean "move this somewhere else" —
+there is no position between two rows to aim at. Dropping on a folder means into
+it, and coming back out means the vault root, which is a strip pinned below the
+list rather than the blank space under the last row: a tree taller than the pane
+leaves no blank space, and the root has to stay reachable at every vault size.
+The strip holds its height whether or not it is showing an outline, since one
+that appeared mid-drag would shove the rows the drag was aimed at.
+
 Drag a note onto a folder and it moves. That is one `fs::rename` and nothing
 else: links resolve by title, the title has not changed, so no other note is
 touched. Dragging a folder moves the whole subtree in one rename, and the index

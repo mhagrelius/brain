@@ -20,7 +20,7 @@ use std::path::Path;
 use adw::prelude::*;
 use brain::model::markdown::{Format, Style};
 use brain::model::note::NoteId;
-use brain::model::tree::Row;
+use brain::model::tree::{self, Listed, Row};
 use brain::ui::{BrainWindow, Editor, RowObject, Sidebar};
 use gtk::glib;
 
@@ -905,6 +905,54 @@ const CASES: &[Case] = &[
                     "the window has no {action}"
                 );
             }
+        },
+    ),
+    (
+        "the vault root stays droppable however long the tree is",
+        |_, _| {
+            let sidebar = Sidebar::new();
+            let notes: Vec<Listed> = (0..200)
+                .map(|n| Listed::new(NoteId::from_relative(format!("Deep/{n}.md")), String::new()))
+                .collect();
+            sidebar.set_rows(&tree::rows(
+                &notes,
+                &[],
+                &["Deep".to_string()].into_iter().collect(),
+                tree::Sort::Name,
+            ));
+
+            // The strip is pinned outside the scroller, so a tree that fills
+            // the pane cannot bury the only way back to the root.
+            let (visible, idle) = sidebar
+                .root_strip_for_test(false)
+                .expect("the sidebar has a root strip");
+            assert!(visible, "the root strip should be on screen");
+            assert_eq!(idle, "", "it should say nothing with no drag in the air");
+
+            let (_, dragging) = sidebar
+                .root_strip_for_test(true)
+                .expect("the sidebar has a root strip");
+            assert_eq!(dragging, "Move to Vault Root");
+
+            // And a drop on it means the root, not whatever folder was last on
+            // screen.
+            let moved = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            sidebar.connect_closure(
+                "moved",
+                false,
+                glib::closure_local!(
+                    #[strong]
+                    moved,
+                    move |_: Sidebar, payload: String, destination: String| {
+                        moved.borrow_mut().push((payload, destination));
+                    }
+                ),
+            );
+            sidebar.drop_for_test("brain-note:Deep/1.md", "");
+            assert_eq!(
+                moved.borrow().as_slice(),
+                [("brain-note:Deep/1.md".to_string(), String::new())]
+            );
         },
     ),
 ];
