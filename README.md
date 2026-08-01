@@ -53,7 +53,8 @@ nest — `#project/brain` sits under `project` — and clicking one filters the
 list.
 
 **Attachments.** Drop a file on the editor or paste an image; it is copied into
-`attachments/` and embedded. Images are drawn under the line that names them.
+`attachments/` and embedded. The picture is drawn at its own shape in place of
+the `![[…]]` that names it, and the filename reappears when the caret is in it.
 
 **Search.** `Ctrl+K` goes to a note by title. `Ctrl+Shift+F` searches the text
 of every note, with the match shown in context.

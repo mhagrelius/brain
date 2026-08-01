@@ -28,7 +28,7 @@ use gtk::glib::{self, clone};
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 
-use crate::model::markdown::{self, Edit, Format, Parsed};
+use crate::model::markdown::{self, Edit, Format, Marker, Parsed, Span};
 use crate::ui::{attachments, highlight, LinkPopover};
 use std::path::PathBuf;
 
@@ -50,6 +50,9 @@ mod imp {
         /// Line count at the last scan, to tell an in-line edit from one that
         /// added or removed a line.
         pub lines: Cell<i32>,
+        /// Character count at the last scan. An edit moves every offset below
+        /// it by the difference, and the cache is in absolute offsets.
+        pub chars: Cell<i32>,
         /// The cursor offset the current reveal was computed for, so a caret
         /// move that stays inside the same construct does no work. `None` when
         /// nothing has been revealed yet.
@@ -75,9 +78,9 @@ mod imp {
         /// The vault root, so an `![[embed]]` can be found on disk. The editor
         /// knows where files live; it does not know what a vault is.
         pub root: RefCell<Option<PathBuf>>,
-        /// Overlay widgets for the embeds currently on show. A `GtkTextView`
-        /// cannot enumerate its own overlays, so they are kept here to be
-        /// removed next time.
+        /// The overlay slots the embeds are drawn in. An overlay cannot be
+        /// removed from a `GtkTextView` at all, so they are kept here and
+        /// refilled, and the spare ones hidden.
         pub embeds: RefCell<Vec<gtk::Widget>>,
         /// The query last asked about. A keystroke moves the cursor *and*
         /// changes the text, so without this every character searches the
@@ -194,7 +197,6 @@ impl Editor {
 
         let buffer = view.buffer();
         highlight::install(&view);
-        attachments::install_tags(&buffer);
 
         buffer.connect_changed(clone!(
             #[weak(rename_to = editor)]
@@ -392,7 +394,7 @@ impl Editor {
         let previous = imp.embeds.take();
         let root = imp.root.borrow().clone();
         let widgets = attachments::refresh(&view, &imp.parsed.borrow(), root.as_deref(), previous);
-        let placed = !widgets.is_empty();
+        let placed = widgets.iter().any(|slot| slot.get_visible());
         imp.embeds.replace(widgets);
 
         // `iter_location` reports zeros until the view has been laid out, so a
@@ -671,6 +673,9 @@ impl Editor {
         let lines = buffer.line_count();
         let cursor = self.cursor_line();
         let previously = imp.lines.replace(lines);
+        // How much longer the buffer got, which is how far the edit pushed
+        // everything below it.
+        let shift = (buffer.char_count() - imp.chars.replace(buffer.char_count())) as isize;
 
         // A changed line count means text moved between lines, and every
         // cached offset below the edit is now wrong.
@@ -736,18 +741,45 @@ impl Editor {
 
         // Splice the re-scanned lines into the cached scan, so the next cursor
         // move has a complete marker list to work from.
+        //
+        // The cache was made before the edit, so it is in the *old* offsets:
+        // the re-scanned lines ended at `to` back then, and everything below
+        // has since moved by `shift`. Comparing old offsets against the new
+        // `to` would keep a stale span from inside the edit — a deletion
+        // shrinks the window out from under it — and would leave every span
+        // below the edit pointing `shift` characters wide of its text.
         let from = self.line_offset(&buffer, first);
         let to = self.line_offset(&buffer, cursor + 1);
+        let was_to = (to as isize - shift) as usize;
+        let moved = |offset: usize| (offset as isize + shift).max(0) as usize;
         {
             let mut parsed = imp.parsed.borrow_mut();
-            parsed
+            let below: Vec<_> = parsed
                 .spans
-                .retain(|span| span.start < from as usize || span.start >= to as usize);
-            parsed
+                .iter()
+                .filter(|span| span.start >= was_to)
+                .map(|span| Span {
+                    start: moved(span.start),
+                    end: moved(span.end),
+                    style: span.style,
+                })
+                .collect();
+            let below_markers: Vec<_> = parsed
                 .markers
-                .retain(|marker| marker.start < from as usize || marker.start >= to as usize);
+                .iter()
+                .filter(|marker| marker.start >= was_to)
+                .map(|marker| Marker {
+                    start: moved(marker.start),
+                    end: moved(marker.end),
+                    reveal: (moved(marker.reveal.0), moved(marker.reveal.1)),
+                })
+                .collect();
+            parsed.spans.retain(|span| span.start < from as usize);
+            parsed.markers.retain(|marker| marker.start < from as usize);
             parsed.spans.extend(scanned.spans.iter().copied());
             parsed.markers.extend(scanned.markers.iter().copied());
+            parsed.spans.extend(below);
+            parsed.markers.extend(below_markers);
             for (index, line_state) in scanned.line_states.iter().enumerate() {
                 if let Some(slot) = parsed.line_states.get_mut(first as usize + index) {
                     *slot = *line_state;
@@ -784,6 +816,7 @@ impl Editor {
         let imp = self.imp();
         imp.parsed.replace(parsed);
         imp.lines.set(buffer.line_count());
+        imp.chars.set(buffer.char_count());
         imp.revealed.set(None);
         self.update_revealed(true);
         self.refresh_embeds();
@@ -1145,6 +1178,28 @@ impl Editor {
     /// The buffer, for tests that need to place a cursor or a selection.
     pub fn buffer_for_test(&self) -> gtk::TextBuffer {
         self.view().buffer()
+    }
+
+    /// How many embeds the view is drawing, counted off the widget tree rather
+    /// than the bookkeeping — an overlay left behind by a deleted embed is
+    /// still on screen however tidy the list of them looks.
+    pub fn embeds_drawn_for_test(&self) -> usize {
+        // The overlays are not direct children of the view: GTK parents each
+        // to a private `GtkTextViewChild`. So this walks the subtree looking
+        // for the slots by their class.
+        fn count(widget: &gtk::Widget) -> usize {
+            // `get_visible`, not `is_visible`: the latter also asks whether
+            // every ancestor is visible, and a test window is never shown.
+            let mut found =
+                usize::from(widget.has_css_class(attachments::SLOT) && widget.get_visible());
+            let mut child = widget.first_child();
+            while let Some(next) = child {
+                found += count(&next);
+                child = next.next_sibling();
+            }
+            found
+        }
+        count(self.view().upcast_ref())
     }
 
     /// The scan the buffer is currently styled against, for tests.

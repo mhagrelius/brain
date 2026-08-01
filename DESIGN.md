@@ -92,9 +92,11 @@ also takes the formatting buttons out of service and is remembered across
 launches, and it is why a plain click follows a link there: with no cursor to
 place, the modifier has nothing to disambiguate.
 
-Image embeds are the one exception to "text only": `![[diagram.png]]` keeps its
-source text and gets a `GtkPicture` at a child anchor on the line beneath it.
-Non-image attachments get a clickable chip instead, opening in the default app.
+Image embeds are the one exception to "text only": a `GtkPicture` is drawn on
+the line beneath `![[diagram.png]]`, which is itself hidden like any other
+syntax — the picture is what the line says, and the filename comes back when
+the caret is in it. Non-image attachments get a clickable chip instead, opening
+in the default app.
 
 ### Links and backlinks
 
@@ -351,8 +353,21 @@ Where the finished thing differs from this document, this is what happened.
   shift the scanner's spans and corrupt notes on save.
   `gtk_text_view_add_overlay` positions a widget at a buffer coordinate and
   touches no text. The cost is that an overlay does not reflow text, so the
-  room for it is reserved separately by a `pixels-below-lines` tag, which is
-  why an embedded image is drawn at a fixed height rather than its own.
+  room for it is reserved separately by a `pixels-below-lines` tag, made per
+  height and applied once the picture has been measured.
+- **An overlay cannot be removed, so the overlays are pooled.**
+  `gtk_text_view_remove` knows anchored children and the gutter windows; an
+  overlay is parented to a private `GtkTextViewChild` and matches neither, so
+  it warns and does nothing, and `unparent` leaves it in GTK's internal list to
+  be allocated and drawn for ever. Each embed is therefore drawn in a slot that
+  is added once and refilled on every re-scan, with the spare slots hidden.
+  Until this was found, every keystroke stacked another copy of each picture on
+  the last, and deleting an embed left its image on screen.
+- **The incremental re-scan shifts the lines it did not re-scan.** The cache is
+  in absolute offsets and an edit moves every offset below it, so the splice
+  works from the character count as well as the line count: spans and markers
+  below the edited window are dropped by their *old* bounds and re-added moved
+  by the difference.
 - **`.brain/index.json` was not built.** The design justified it as making a
   cold start on a large vault fast, so it was measured first: a 1000-note vault
   reads off disk in 1.8 ms and indexes in 104 ms. The reading was never the

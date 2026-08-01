@@ -168,6 +168,11 @@ const CASES: &[Case] = &[
                 ("Tagged #rust here", 12, "y"),
                 ("> quoted line", 13, "s"),
                 ("plain text", 5, "x"),
+                // Typing on an early line moves every offset below it, and the
+                // cache is in absolute offsets: these fail unless the splice
+                // shifts the lines it did not re-scan.
+                ("**bold** here\nA [[Link]] there", 2, "x"),
+                ("# Title\n\n`code` and *it*", 7, "!"),
             ];
 
             for (body, at, typed) in cases {
@@ -362,6 +367,40 @@ const CASES: &[Case] = &[
             editor.insert_embed("d.png");
 
             assert_eq!(editor.body(), "Some prose.\n![[d.png]]\n");
+        },
+    ),
+    (
+        "deleting an embed takes its picture with it",
+        |window, vault| {
+            let attachments = vault.join("attachments");
+            fs::create_dir_all(&attachments).expect("dir");
+            fs::write(attachments.join("d.png"), PNG).expect("write");
+
+            window.set_vault_root(Some(vault.to_path_buf()));
+            let id = NoteId::from_relative("A.md");
+            window.show_note(Some((&id, "Before\n![[d.png]]\nAfter\n")));
+
+            let editor = window.editor().expect("an editor");
+            assert_eq!(editor.embeds_drawn_for_test(), 1, "no picture was drawn");
+
+            // The whole construct, as selecting the line and deleting it does.
+            let buffer = editor.buffer_for_test();
+            buffer.place_cursor(&buffer.iter_at_offset(7));
+            buffer.delete(
+                &mut buffer.iter_at_offset(7),
+                &mut buffer.iter_at_offset(17),
+            );
+
+            assert_eq!(editor.body(), "Before\n\nAfter\n");
+            assert_eq!(
+                editor.embeds_drawn_for_test(),
+                0,
+                "the picture outlived the embed that named it"
+            );
+
+            // And a note with no embed at all does not inherit the last one's.
+            window.show_note(Some((&NoteId::from_relative("B.md"), "Plain.\n")));
+            assert_eq!(editor.embeds_drawn_for_test(), 0);
         },
     ),
     (

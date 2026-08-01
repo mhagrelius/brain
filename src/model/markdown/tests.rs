@@ -378,14 +378,28 @@ fn a_piped_wikilink_shows_only_the_display_text() {
 }
 
 #[test]
-fn an_embed_keeps_its_filename_legible() {
-    // The picture is drawn beneath the line; an image with no indication of
-    // which file it came from cannot be edited deliberately.
+fn an_embed_hides_entirely_and_leaves_the_file_to_speak() {
+    // The picture drawn beneath the line names the file itself, so the line
+    // reads as the image rather than as the image and its filename.
     let source = "![[diagram.png]]";
     let parsed = parse(source);
     assert_eq!(styles(&parsed), vec![Style::Embed]);
     assert_eq!(text_of(source, &parsed.spans[0]), "diagram.png");
-    assert_eq!(rendered(source), "diagram.png");
+    assert_eq!(rendered(source), "");
+}
+
+#[test]
+fn a_caret_in_an_embed_brings_the_filename_back() {
+    let parsed = parse("![[diagram.png]]");
+    // Every offset in the construct reveals it, including the two ends: you
+    // cannot retarget an embed you cannot see.
+    for cursor in 0..=16 {
+        assert!(
+            parsed.markers.iter().all(|m| m.revealed_by(cursor)),
+            "hidden with the caret at {cursor}"
+        );
+    }
+    assert!(parsed.markers.iter().all(|m| !m.revealed_by(17)));
 }
 
 #[test]

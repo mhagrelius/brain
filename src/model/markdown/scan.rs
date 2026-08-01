@@ -278,11 +278,12 @@ fn try_code(line: &[char], i: usize, offset: usize, parsed: &mut Parsed) -> Opti
     Some(close + 1)
 }
 
-/// `![[attachment.png]]` — the brackets are syntax, the filename is not.
+/// `![[attachment.png]]` — the whole construct is syntax, filename included.
 ///
-/// The name stays legible because the rendered file appears on the line
-/// beneath, and an image with no indication of which file it came from is
-/// impossible to edit deliberately.
+/// Unlike a link, an embed has no text to read: what it says is drawn beneath
+/// the line as a picture or a chip, both of which name the file themselves. So
+/// the filename hides with the brackets and comes back with them, when the
+/// caret is in the construct and you are editing it rather than reading it.
 fn try_embed(line: &[char], i: usize, offset: usize, parsed: &mut Parsed) -> Option<usize> {
     if !line[i..].starts_with(&['!', '[', '[']) {
         return None;
@@ -291,10 +292,14 @@ fn try_embed(line: &[char], i: usize, offset: usize, parsed: &mut Parsed) -> Opt
     if close == i + 3 {
         return None; // "![[]]" names nothing.
     }
+    // Three markers rather than one over the lot, so the brackets stay
+    // identifiable: [`links`] finds where a construct begins by looking up the
+    // marker that ends where its span starts.
     let reveal = (offset + i, offset + close + 2);
     parsed.push_marker(offset + i, offset + i + 3, reveal);
-    parsed.push_span(offset + i + 3, offset + close, Style::Embed);
+    parsed.push_marker(offset + i + 3, offset + close, reveal);
     parsed.push_marker(offset + close, offset + close + 2, reveal);
+    parsed.push_span(offset + i + 3, offset + close, Style::Embed);
     Some(close + 2)
 }
 
