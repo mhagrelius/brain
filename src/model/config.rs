@@ -35,6 +35,14 @@ pub struct Config {
     /// chose and the app forgot is a mode you have to choose every launch.
     #[serde(default)]
     pub reading_mode: bool,
+    /// How the sidebar orders notes: `name`, `modified` or `created`.
+    #[serde(default)]
+    pub sort: String,
+    /// Which folders were open in the sidebar. View state, not vault state —
+    /// losing it costs one click per folder, so it lives here rather than
+    /// anywhere near the notes.
+    #[serde(default)]
+    pub expanded_folders: Vec<String>,
 }
 
 fn default_version() -> u32 {
@@ -161,6 +169,8 @@ mod tests {
             window_height: Some(760),
             window_maximized: false,
             reading_mode: true,
+            sort: "modified".into(),
+            expanded_folders: vec!["Meetings".into()],
         };
         config.save(&path).expect("save");
 

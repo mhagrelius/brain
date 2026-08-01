@@ -31,6 +31,14 @@ pub enum VaultError {
     NotInVault(PathBuf),
     /// A note already exists where one was about to be created.
     Exists(NoteId),
+    /// A folder already exists where one was about to be created or moved.
+    FolderExists(String),
+    /// A folder was asked to move inside itself, which `fs::rename` would
+    /// either refuse or, worse, do.
+    IntoItself(String),
+    /// A folder still holds notes. Brain deletes one note at a time, never a
+    /// subtree by accident.
+    FolderNotEmpty(String),
     /// The file is not valid UTF-8. Brain does not guess encodings.
     NotText(NoteId),
     Io {
@@ -44,6 +52,9 @@ impl std::fmt::Display for VaultError {
         match self {
             Self::NotInVault(path) => write!(f, "{} is not inside the vault", path.display()),
             Self::Exists(id) => write!(f, "{id} already exists"),
+            Self::FolderExists(path) => write!(f, "the folder {path} already exists"),
+            Self::IntoItself(path) => write!(f, "{path} cannot be moved inside itself"),
+            Self::FolderNotEmpty(path) => write!(f, "{path} still holds notes"),
             Self::NotText(id) => write!(f, "{id} is not UTF-8 text"),
             Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
         }
@@ -211,6 +222,135 @@ impl Vault {
     pub fn delete(&self, id: &NoteId) -> Result<(), VaultError> {
         let path = self.path_of(id);
         fs::remove_file(&path).map_err(|source| VaultError::Io { path, source })
+    }
+
+    /// When a note was last written and when it was created, in seconds since
+    /// the epoch.
+    ///
+    /// Creation time is not something every filesystem records, so it falls
+    /// back to the modification time rather than to zero — a note that exists
+    /// was created at some point, and sorting it to the bottom for ever
+    /// because ext3 does not keep birth times would be worse than approximate.
+    pub fn times(&self, id: &NoteId) -> (u64, u64) {
+        let Ok(metadata) = fs::metadata(self.path_of(id)) else {
+            return (0, 0);
+        };
+        let seconds = |time: io::Result<std::time::SystemTime>| {
+            time.ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|since| since.as_secs())
+        };
+        let modified = seconds(metadata.modified()).unwrap_or(0);
+        (modified, seconds(metadata.created()).unwrap_or(modified))
+    }
+
+    // ---- folders ----
+
+    /// Every folder in the vault, vault-relative and `/` separated.
+    ///
+    /// Listed from the filesystem rather than derived from the notes, because a
+    /// folder with nothing in it yet is exactly the folder someone just made
+    /// and is about to look for. `attachments/` is not one of them: it holds
+    /// files Brain put there, not notes anyone files.
+    pub fn folders(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        self.walk_folders(&self.root, "", &mut out);
+        out.sort();
+        out
+    }
+
+    fn walk_folders(&self, dir: &Path, prefix: &str, out: &mut Vec<String>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || (prefix.is_empty() && name == ATTACHMENTS_DIR) {
+                continue;
+            }
+            let path = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            };
+            self.walk_folders(&entry.path(), &path, out);
+            out.push(path);
+        }
+    }
+
+    /// The absolute path of a vault-relative folder. The empty string is the
+    /// vault root.
+    pub fn folder_path(&self, folder: &str) -> PathBuf {
+        if folder.is_empty() {
+            self.root.clone()
+        } else {
+            self.root.join(folder)
+        }
+    }
+
+    pub fn create_folder(&self, folder: &str) -> Result<(), VaultError> {
+        let path = self.folder_path(folder);
+        if path.exists() {
+            return Err(VaultError::FolderExists(folder.to_string()));
+        }
+        fs::create_dir_all(&path).map_err(|source| VaultError::Io { path, source })
+    }
+
+    /// Move or rename a folder, with everything in it.
+    ///
+    /// One `fs::rename` rather than a note-by-note walk: the directory moves
+    /// atomically, so an interrupted move cannot leave half a folder in each
+    /// place. Every note under it changes id, which the caller handles by
+    /// rescanning — the alternative is patching a subtree of the index and
+    /// getting it subtly wrong.
+    pub fn move_folder(&self, from: &str, to: &str) -> Result<(), VaultError> {
+        if from.is_empty() {
+            return Err(VaultError::NotInVault(self.root.clone()));
+        }
+        if crate::model::tree::is_within(from, to) {
+            return Err(VaultError::IntoItself(from.to_string()));
+        }
+        let target = self.folder_path(to);
+        if target.exists() {
+            return Err(VaultError::FolderExists(to.to_string()));
+        }
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|source| VaultError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        fs::rename(self.folder_path(from), &target).map_err(|source| VaultError::Io {
+            path: target,
+            source,
+        })
+    }
+
+    /// Remove a folder that holds no notes.
+    ///
+    /// Refused while anything is still in it. Deleting a subtree is one click
+    /// away from deleting a year of notes, and the file manager is a better
+    /// place to mean it.
+    pub fn delete_folder(&self, folder: &str) -> Result<(), VaultError> {
+        if folder.is_empty() {
+            return Err(VaultError::NotInVault(self.root.clone()));
+        }
+        let path = self.folder_path(folder);
+        let empty = fs::read_dir(&path)
+            .map(|entries| entries.flatten().all(|entry| entry.path().is_dir()))
+            .unwrap_or(false);
+        let has_notes = self
+            .scan()
+            .0
+            .iter()
+            .any(|note| note.id.as_str().starts_with(&format!("{folder}/")));
+        if has_notes || !empty {
+            return Err(VaultError::FolderNotEmpty(folder.to_string()));
+        }
+        fs::remove_dir_all(&path).map_err(|source| VaultError::Io { path, source })
     }
 
     /// Copy a dropped file into `attachments/`, returning the name to embed.
@@ -407,6 +547,82 @@ mod tests {
         assert_eq!(vault.id_of(&directory.path().join("d.png")), None);
         assert_eq!(vault.id_of(&directory.path().join(".brain/x.md")), None);
         assert_eq!(vault.id_of(Path::new("/elsewhere/Note.md")), None);
+    }
+
+    #[test]
+    fn folders_are_listed_from_disk_including_the_empty_ones() {
+        let (directory, vault) = vault();
+        vault
+            .create(&id("Work/Deep/Note.md"), "note")
+            .expect("create");
+        vault.create_folder("Archive").expect("folder");
+        // Not folders anyone files notes in.
+        fs::create_dir_all(directory.path().join(ATTACHMENTS_DIR)).expect("dir");
+        fs::create_dir_all(directory.path().join(CACHE_DIR)).expect("dir");
+
+        assert_eq!(vault.folders(), ["Archive", "Work", "Work/Deep"]);
+    }
+
+    #[test]
+    fn a_folder_moves_with_everything_in_it() {
+        let (_directory, vault) = vault();
+        vault.create(&id("Work/Note.md"), "body").expect("create");
+        vault.move_folder("Work", "Archive/Work").expect("move");
+
+        assert_eq!(
+            vault.read(&id("Archive/Work/Note.md")).expect("read").body,
+            "body"
+        );
+        assert!(vault.read(&id("Work/Note.md")).is_err());
+    }
+
+    #[test]
+    fn a_folder_cannot_be_moved_inside_itself() {
+        let (_directory, vault) = vault();
+        vault.create(&id("Work/Note.md"), "body").expect("create");
+        assert!(matches!(
+            vault.move_folder("Work", "Work/Nested"),
+            Err(VaultError::IntoItself(_))
+        ));
+        assert!(vault.read(&id("Work/Note.md")).is_ok());
+    }
+
+    #[test]
+    fn moving_onto_an_existing_folder_is_refused() {
+        let (_directory, vault) = vault();
+        vault.create(&id("A/Note.md"), "a").expect("create");
+        vault.create(&id("B/Note.md"), "b").expect("create");
+        assert!(matches!(
+            vault.move_folder("A", "B"),
+            Err(VaultError::FolderExists(_))
+        ));
+        assert_eq!(vault.read(&id("B/Note.md")).expect("read").body, "b");
+    }
+
+    #[test]
+    fn a_folder_with_notes_in_it_is_not_deleted() {
+        let (_directory, vault) = vault();
+        vault.create(&id("Work/Note.md"), "body").expect("create");
+        assert!(matches!(
+            vault.delete_folder("Work"),
+            Err(VaultError::FolderNotEmpty(_))
+        ));
+        assert!(vault.read(&id("Work/Note.md")).is_ok());
+
+        vault.delete(&id("Work/Note.md")).expect("delete");
+        vault.delete_folder("Work").expect("delete folder");
+        assert!(vault.folders().is_empty());
+    }
+
+    #[test]
+    fn a_notes_times_are_read_and_an_unknown_one_is_zero() {
+        let (_directory, vault) = vault();
+        vault.create(&id("Note.md"), "body").expect("create");
+        let (modified, created) = vault.times(&id("Note.md"));
+        assert!(modified > 0, "a note just written has a modification time");
+        assert!(created > 0, "creation falls back to modification");
+
+        assert_eq!(vault.times(&id("Gone.md")), (0, 0));
     }
 
     #[test]
