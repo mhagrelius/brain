@@ -48,6 +48,10 @@ or `Ctrl+Return` follows a link; following one that points nowhere offers to
 write it. Renaming a note repoints every link that pointed at it. The right
 pane lists what links here.
 
+**The note list.** Right-click a note — or press `Shift+F10` on it — for rename
+and delete. Both open the note first, so the menu means the same thing as the
+one in the header.
+
 **Tags.** `#tag` inline and `tags:` in frontmatter are the same thing. They
 nest — `#project/brain` sits under `project` — and clicking one filters the
 list.

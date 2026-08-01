@@ -774,6 +774,45 @@ const CASES: &[Case] = &[
             );
         },
     ),
+    (
+        "a note row's menu names actions the window has",
+        |window, _| {
+            let sidebar = Sidebar::new();
+            sidebar.set_notes(&[(NoteId::from_relative("A.md"), "first".to_string())]);
+
+            let mut child = sidebar.first_child();
+            let menu = loop {
+                match child {
+                    Some(widget) => match widget.downcast::<gtk::PopoverMenu>() {
+                        Ok(menu) => break Some(menu),
+                        Err(widget) => child = widget.next_sibling(),
+                    },
+                    None => break None,
+                }
+            };
+            let menu = menu.expect("the row menu is parented to the sidebar");
+            let model = menu.menu_model().expect("a menu model");
+
+            let actions: Vec<String> = (0..model.n_items())
+                .filter_map(|index| {
+                    model
+                        .item_attribute_value(index, "action", Some(&String::static_variant_type()))
+                        .and_then(|value| value.get::<String>())
+                })
+                .collect();
+            assert_eq!(actions, ["win.rename-note", "win.delete-note"]);
+
+            // Naming an action the window does not have would leave the menu
+            // items permanently insensitive, which nothing else here would
+            // catch.
+            for action in &actions {
+                assert!(
+                    gtk::prelude::WidgetExt::activate_action(window, action, None).is_ok(),
+                    "the window has no {action}"
+                );
+            }
+        },
+    ),
 ];
 
 /// Cases that need no window, kept here so they run on the GTK thread too.

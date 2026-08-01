@@ -755,6 +755,7 @@ impl BrainWindow {
                     ("<Control>n", "New note"),
                     ("<Control>s", "Save now"),
                     ("<Control>r", "Reload from disk"),
+                    ("<Shift>F10", "Menu for the note in the list"),
                 ],
             ),
             (
