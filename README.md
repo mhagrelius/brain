@@ -192,8 +192,10 @@ coalesced by a two-second tick, written tmp → fsync → rename, and flushed on
 note switch, close and shutdown.
 
 **The scanner reports which characters are syntax**, not just what is styled —
-that is the whole editing model, and it is why there is no Markdown crate here.
-See DESIGN.md.
+that is the whole editing model, and it is why no general Markdown crate would
+do. It lives in [quill](https://github.com/mhagrelius/quill), which Stickies and
+Familiar read too, and is re-exported here as `brain::model::markdown`. See
+DESIGN.md.
 
 **Re-styling is per line.** A keystroke re-scans the line under the cursor and
 the one above it; only an edit that changes what follows escalates to a full
@@ -222,7 +224,7 @@ non-zero on any failure, so it runs as a gate rather than reads as a demo.
 
 | Where | Covers |
 |---|---|
-| `src/model/**` | the scanner, frontmatter round-trip, index, search — the bulk |
+| `src/model/**` | frontmatter round-trip, index, search — the bulk. The scanner is tested in `quill` |
 | `tests/session.rs` | whole scenarios against a real vault, no GTK — including the vectors keeping up with files changed behind the app's back |
 | `tests/widgets.rs` | widgets, in one `#[test]` because GTK is thread-affine |
 | `tests/lifecycle.rs` | the real application, driven end to end |

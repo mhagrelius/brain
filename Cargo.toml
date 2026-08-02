@@ -15,6 +15,11 @@ name = "brain"
 path = "src/lib.rs"
 
 [dependencies]
+# The Markdown scanner, which Brain used to carry in-tree. It moved out when
+# Stickies' copy and this one had drifted into two maintenance burdens for one
+# parser; Familiar reads it through the re-export below. No dependencies and
+# nothing in it draws, so it costs nothing here.
+quill = { git = "https://github.com/mhagrelius/quill", rev = "e28603237916589af22314acbb098849fd5da8fa" }
 gtk = { package = "gtk4", version = "0.11", features = ["v4_22"] }
 adw = { package = "libadwaita", version = "0.9", features = ["v1_9"] }
 # Direct dependency purely to raise the API level above what gtk4 pulls in:

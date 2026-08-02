@@ -362,8 +362,17 @@ syntax, which is inference rather than fact, and every span additionally needs a
 byte→char offset conversion before `GtkTextBuffer` will take it. That is two
 subtle layers over a parser whose output shape is wrong for this, to replace
 Stickies' `model/markdown.rs`, which already emits `Span` + `Marker` in char
-offsets and is tested. Brain ports it and extends it: wikilinks, embeds, tags,
+offsets and is tested. Brain ported it and extended it: wikilinks, embeds, tags,
 task checkboxes, thematic breaks, frontmatter as its own block, bare URLs.
+
+That port is why the scanner no longer lives here. Two copies of one parser, one
+of them a superset of the other, is a maintenance burden and not a design; it
+moved out to [quill](https://github.com/mhagrelius/quill), which has no
+dependencies and nothing in it that draws. Brain re-exports it as
+`brain::model::markdown` so every call site reads as it always did. What did not
+move is `ui/highlight.rs`: revealing the construct under the caret is Brain's
+policy, Stickies reveals everything on focus and Familiar reveals nothing, and a
+shared renderer would have to fight all three.
 
 The inherited limit is that inline styling does not cross a line break, because
 the scanner is line-based. That is also what makes the incremental re-scan
@@ -435,10 +444,10 @@ Where the finished thing differs from this document, this is what happened.
   the first install: something like LibreOffice's sidebar, saying what the note
   is and what can be done to it. The formatting half is the interesting part —
   each button shows the syntax it writes, so the pane teaches the Markdown
-  rather than hiding it behind a toolbar. `Format` lives in `model/markdown`
-  beside the scanner, and a test parses what every button writes to prove the
-  scanner styles it: a button that emitted syntax the editor rendered as plain
-  prose would be worse than no button.
+  rather than hiding it behind a toolbar. `Format` lives in `quill` beside the
+  scanner, and a test parses what every button writes to prove the scanner
+  styles it: a button that emitted syntax the editor rendered as plain prose
+  would be worse than no button.
 - **Semantic search arrived, and it does not use a database.** The design said
   no SQLite and no embedding model, on the grounds that Brain's own index was
   the retrieval and hybrid recall had only been worth building in `llamatui`
