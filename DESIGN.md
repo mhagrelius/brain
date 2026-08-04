@@ -637,6 +637,35 @@ Where the finished thing differs from this document, this is what happened.
   vanishing, both versions are safe and the user is being asked which they
   want. A divergence hidden behind a save failure is a nuisance; a save failure
   hidden behind a divergence is a lost note.
+- **Vectors can be shared between machines, and that is the first thing on a
+  network.** `Postgres and pgvector were available and not used` above is still
+  right about *searching* — brute-force cosine over a personal vault is 0.27 ms
+  and a network database would be a reason for search to fail while the notes
+  are on disk. What it did not anticipate is the other cost: opening the same
+  vault on a second machine pays the same minutes of embedding again for text
+  that hashed identically.
+
+  So `semantic::Shared` is a fetch-and-publish seam, and `server/` is a small
+  service behind it. **Keyed by digest, not note id** — the digest is over the
+  title and the text, so the same note has the same key on every machine
+  whatever folder it sits in, and a move is free across machines for the same
+  reason it is free locally. **Namespaced by model**, because vectors from two
+  models rank plausibly and wrongly. **Note text never leaves**: digests go
+  out, vectors come back, so the store learns which fingerprints a vault holds
+  and nothing about what the notes say.
+
+  This went first, ahead of syncing notes, because the failure is cheap. A
+  store that is unreachable, wrong or wiped costs one pass of embedding and
+  nothing else, and search carries on lexically meanwhile — so it proves the
+  container, the network path and the client's tolerance of a server that is
+  not there against the thing that cannot lose work.
+
+  The service has no HTTP dependency. Three routes, JSON bodies, one client,
+  on a private network: request line, headers, `Content-Length`, body, respond,
+  close is the whole protocol, and it is about a hundred lines of exhaustively
+  testable parsing. That is the same argument that kept YAML out of the
+  frontmatter and CommonMark out of the scanner. If it ever needs keep-alive,
+  chunked bodies or TLS it should take a real server rather than grow one.
 
 ## Settled
 

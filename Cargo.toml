@@ -1,5 +1,5 @@
 [workspace]
-members = ["core"]
+members = ["core", "server"]
 
 [package]
 name = "brain"
@@ -28,6 +28,9 @@ adw = { package = "libadwaita", version = "0.9", features = ["v1_9"] }
 # ApplicationCommandLine::print_literal is gated behind v2_80, and the vault
 # directory monitors want the v2_80 GFileMonitor signal shape.
 gio = { version = "0.22", features = ["v2_80"] }
+# The shell's own wire types: the shared vector store's request and response
+# bodies. Everything the vault is made of is brain-core's to serialise.
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The platform's HTTP client, for the one thing Brain talks to over a socket:
 # a local llama.cpp server that turns notes into vectors. It ships in

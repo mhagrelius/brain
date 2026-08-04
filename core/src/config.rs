@@ -47,6 +47,19 @@ pub struct Config {
     /// is serving a model.
     #[serde(default)]
     pub embedding_url: Option<String>,
+    /// Where a shared vector store is, so a vault embedded on one machine
+    /// costs nothing on the next.
+    ///
+    /// Absent or empty means there is not one, which is the default: a
+    /// personal vault on one machine has nobody to share with, and a store
+    /// nobody configured must not be a service Brain goes looking for.
+    #[serde(default)]
+    pub vectors_url: Option<String>,
+    /// The shared secret for that store. Kept beside the URL because they are
+    /// useless apart, and because the config file is already the one place
+    /// Brain keeps anything about where a note's fingerprint may go.
+    #[serde(default)]
+    pub vectors_token: Option<String>,
     /// Which folders were open in the sidebar. View state, not vault state —
     /// losing it costs one click per folder, so it lives here rather than
     /// anywhere near the notes.
@@ -180,6 +193,8 @@ mod tests {
             reading_mode: true,
             sort: "modified".into(),
             embedding_url: Some("http://127.0.0.1:8081".into()),
+            vectors_url: Some("http://nas:8082".into()),
+            vectors_token: Some("a-token-of-at-least-thirty-two-chars".into()),
             expanded_folders: vec!["Meetings".into()],
         };
         config.save(&path).expect("save");

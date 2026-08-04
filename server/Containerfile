@@ -1,0 +1,47 @@
+# brain-vectors, for the NAS's container manager.
+#
+#   podman build -f server/Containerfile -t brain-vectors .
+#   podman run -d --name brain-vectors \
+#     -e BRAIN_VECTORS_TOKEN="$(openssl rand -hex 32)" \
+#     -v brain-vectors:/var/lib/brain-vectors \
+#     -p 8082:8082 brain-vectors
+#
+# Built from the workspace root, because the server depends on brain-core by
+# path and a build context of `server/` alone cannot see it.
+
+FROM docker.io/library/rust:1.83-slim AS build
+WORKDIR /src
+# The manifests first, so a change to the sources does not re-resolve the
+# dependency graph. The core's sources come along because the server depends on
+# it by path and cargo will not plan without them.
+COPY Cargo.toml Cargo.lock ./
+COPY core/Cargo.toml core/Cargo.toml
+COPY server/Cargo.toml server/Cargo.toml
+COPY core/src core/src
+COPY server/src server/src
+# Only the server. Building the workspace would pull in the GTK shell, which
+# wants libadwaita and has no business in a headless image.
+RUN cargo build --release --locked --package brain-vectors
+
+FROM docker.io/library/debian:bookworm-slim
+# Nothing is built here and nothing is downloaded at runtime, so the image
+# needs no package manager state.
+RUN rm -rf /var/lib/apt/lists/*
+# An unprivileged user with a home it does not use: the only thing written is
+# the data volume, and root is not needed to write that.
+RUN useradd --system --create-home --uid 10001 vectors \
+    && mkdir -p /var/lib/brain-vectors \
+    && chown vectors:vectors /var/lib/brain-vectors
+COPY --from=build /src/target/release/brain-vectors /usr/local/bin/brain-vectors
+
+USER vectors
+VOLUME /var/lib/brain-vectors
+EXPOSE 8082
+ENV BRAIN_VECTORS_ADDR=0.0.0.0:8082 \
+    BRAIN_VECTORS_DATA=/var/lib/brain-vectors
+
+# `/health` needs no token, which is the reason it needs no token.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
+    CMD ["/usr/local/bin/brain-vectors", "--health"]
+
+ENTRYPOINT ["/usr/local/bin/brain-vectors"]

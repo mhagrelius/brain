@@ -516,6 +516,28 @@ fn a_new_note_lands_in_the_folder_last_worked_in() {
 }
 
 #[test]
+fn half_a_shared_vector_store_configuration_is_none_at_all() {
+    let (_dir, mut notebook) = notebook(&[]);
+
+    assert_eq!(notebook.shared_vectors(), None);
+
+    // A URL with no token cannot authenticate and a token with no URL has
+    // nowhere to go. Either alone is a mistake nobody would see a message
+    // about, so neither is half-honoured.
+    notebook.config_mut().vectors_url = Some("http://nas:8082".into());
+    assert_eq!(notebook.shared_vectors(), None);
+
+    notebook.config_mut().vectors_token = Some("  ".into());
+    assert_eq!(notebook.shared_vectors(), None);
+
+    notebook.config_mut().vectors_token = Some("a-token".into());
+    assert_eq!(
+        notebook.shared_vectors(),
+        Some(("http://nas:8082".to_string(), "a-token".to_string()))
+    );
+}
+
+#[test]
 fn a_link_to_a_missing_note_resolves_to_missing() {
     use brain_core::index::Resolution;
     let (_dir, notebook) = notebook(&[("A.md", "see [[Nowhere]]")]);

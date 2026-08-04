@@ -32,6 +32,7 @@ dependencies = [
  "gio",
  "gtk4",
  "libadwaita",
+ "serde",
  "serde_json",
  "soup3",
  "tempfile",
@@ -43,6 +44,16 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "quill",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "brain-vectors"
+version = "0.1.0"
+dependencies = [
+ "brain-core",
  "serde",
  "serde_json",
  "tempfile",

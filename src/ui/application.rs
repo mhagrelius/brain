@@ -512,13 +512,13 @@ impl BrainApplication {
             imp.restack.set(true);
             return;
         }
-        let (url, index, store) = {
+        let (url, shared, index, store) = {
             let notebook = imp.notebook.borrow();
             let Some(url) = notebook.embedding_url(crate::ui::DEFAULT_EMBEDDING_URL) else {
                 return; // semantic search is turned off
             };
             let (index, store) = notebook.catch_up_input();
-            (url, index, store)
+            (url, notebook.shared_vectors(), index, store)
         };
         imp.catching_up.set(true);
 
@@ -527,9 +527,22 @@ impl BrainApplication {
             self,
             async move {
                 let outcome = gtk::gio::spawn_blocking(move || {
+                    use crate::model::semantic::Embedder;
                     let mut store = store;
                     let embedder = crate::ui::Llama::connect(&url)?;
-                    let report = semantic::catch_up(&mut store, &index, &embedder);
+                    // Both sessions are made on this thread and dropped with
+                    // it, which is what libsoup asks for.
+                    let shared = shared.map(|(url, token)| {
+                        crate::ui::SharedVectors::new(&url, &token, &embedder.model())
+                    });
+                    let report = semantic::catch_up_sharing(
+                        &mut store,
+                        &index,
+                        &embedder,
+                        shared
+                            .as_ref()
+                            .map(|shared| shared as &dyn semantic::Shared),
+                    );
                     Ok::<_, semantic::EmbedError>((store, report))
                 })
                 .await;

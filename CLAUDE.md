@@ -18,6 +18,7 @@ See `PLAN.md` for where this is going: the split exists so a second shell on ano
 - `cargo run --example icons_check` — asserts every icon name resolves. An unresolved one draws a missing-image glyph and warns about nothing, so add new names to `USED`.
 - `./install.sh` — release build, installs under `~/.local`. `./uninstall.sh` reverses it.
 - `packaging/build-flatpak.sh` and `packaging/build-deb.sh` — distribution artifacts.
+- `server/` is `brain-vectors`, the shared vector store. `podman build -f server/Containerfile -t brain-vectors .` from the repo root — the context must be the workspace, since it depends on `brain-core` by path. It needs `BRAIN_VECTORS_TOKEN` (32 characters or more) and refuses to start without one.
 
 ## Layout
 
@@ -29,7 +30,9 @@ See `PLAN.md` for where this is going: the split exists so a second shell on ano
 
 **Push logic down into `brain-core`.** A rule that lives there is tested by `cargo test` with no display; the same rule inside a widget is only reachable through the GTK harness. The sidebar's tree is the worked example — `core/src/tree.rs` decides what the rows are, and the widget only draws them.
 
-**The embedder stayed in the shell on purpose.** `semantic::Embedder` is a trait in the core; `src/ui/embedder.rs` is libsoup's answer to it. Keeping the transport out of the core is what stops GLib being dragged onto a platform that has no use for it — anything new that opens a socket goes on the shell side of that trait too.
+**The embedder stayed in the shell on purpose.** `semantic::Embedder` is a trait in the core; `src/ui/embedder.rs` is libsoup's answer to it. Keeping the transport out of the core is what stops GLib being dragged onto a platform that has no use for it — anything new that opens a socket goes on the shell side of that trait too. `semantic::Shared` and `src/ui/shared_vectors.rs` are the same pattern for the shared vector store.
+
+**Wire formats are pinned on both sides.** The client and `brain-vectors` define the same JSON in two crates that never see each other's types, so each has a test asserting the exact bytes. Change one and the other's test fails, which is the only warning there is.
 
 ## Testing
 

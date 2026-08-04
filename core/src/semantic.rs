@@ -71,6 +71,10 @@ impl Digest {
     }
 }
 
+/// One note's vectors: a unit vector per chunk, in the order the chunks appear
+/// in the note.
+pub type Chunks = Vec<Vec<f32>>;
+
 /// One note's vectors, and the version of the note they describe.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Embedded {
@@ -384,6 +388,36 @@ pub trait Embedder {
     }
 }
 
+/// Vectors that other machines have already paid for.
+///
+/// **Keyed by [`Digest`], not by [`NoteId`].** The digest is over the title and
+/// the text, so the same note has the same digest on every machine whatever
+/// folder it sits in and whichever vault it belongs to. That makes the service
+/// vault-agnostic and makes a move free across machines for the same reason it
+/// is free locally: nothing about the content changed.
+///
+/// This is the seam `DESIGN.md` named — "if these notes ever need to be
+/// searched from another machine, it is one type to reimplement" — and it is
+/// deliberately the *first* thing to go over a network, because the failure is
+/// cheap. A shared store that cannot be reached costs one pass of embedding;
+/// nothing is lost and search still works. Notes get the same treatment only
+/// after this has proved the path.
+///
+/// Synchronous for the same reason [`Embedder`] is: the caller is already on a
+/// worker thread.
+pub trait Shared {
+    /// Whichever of these digests the store knows. Missing ones are simply
+    /// absent from the answer; there is no way to ask about one that fails.
+    fn fetch(&self, digests: &[Digest]) -> Result<Vec<(Digest, Chunks)>, EmbedError>;
+
+    /// Offer vectors this machine just computed, so the next machine does not.
+    ///
+    /// Best-effort by contract: a refused publish is not worth failing a pass
+    /// over, because the vectors are already in the local store and the only
+    /// thing lost is someone else's time.
+    fn publish(&self, entries: &[(Digest, Chunks)]) -> Result<(), EmbedError>;
+}
+
 /// Why embedding did not happen. One string: every caller's recovery is the
 /// same — leave the note unembedded and try again next time — so a taxonomy of
 /// failures would only give them something to ignore.
@@ -400,6 +434,10 @@ impl std::fmt::Display for EmbedError {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
     pub embedded: usize,
+    /// Notes taken from a shared store instead of being embedded. The point of
+    /// having one: on the second machine this is the whole vault and
+    /// `embedded` is zero.
+    pub fetched: usize,
     pub moved: usize,
     pub dropped: usize,
     /// Notes still waiting for a model, because the server stopped answering
@@ -440,6 +478,26 @@ pub fn wanted(index: &Index) -> Vec<Wanted> {
 /// resumes. Hammering a server that just refused fifty requests with fifty more
 /// is how a laptop's fans come on.
 pub fn catch_up(store: &mut Store, index: &Index, embedder: &dyn Embedder) -> Report {
+    catch_up_sharing(store, index, embedder, None)
+}
+
+/// [`catch_up`], asking a [`Shared`] store before troubling the model.
+///
+/// The order is fetch, then embed, then publish. Fetching first is the whole
+/// saving: on a machine that opens a vault another machine already embedded,
+/// every digest comes back from the store and the model is never called.
+///
+/// A shared store that fails is not a failure of the pass. `fetch` returning an
+/// error means everything is embedded locally, exactly as if there were no
+/// shared store; `publish` returning one means the next machine pays again.
+/// Neither loses anything, which is why this is the safe thing to put on a
+/// network first.
+pub fn catch_up_sharing(
+    store: &mut Store,
+    index: &Index,
+    embedder: &dyn Embedder,
+    shared: Option<&dyn Shared>,
+) -> Report {
     let mut report = Report {
         reset: store.set_model(&embedder.model()),
         ..Report::default()
@@ -453,7 +511,33 @@ pub fn catch_up(store: &mut Store, index: &Index, embedder: &dyn Embedder) -> Re
     // point is behind rather than wrong, whatever the server does next.
     store.apply(&plan);
 
-    for id in &plan.embed {
+    // What each note in the plan hashes to, computed once and used three times:
+    // to ask the shared store, to insert what comes back, and to publish what
+    // does not.
+    let digests: Vec<(NoteId, Digest)> = plan
+        .embed
+        .iter()
+        .map(|id| (id.clone(), digest_of(id.title(), index.text(id))))
+        .collect();
+
+    let mut known: BTreeMap<Digest, Chunks> = BTreeMap::new();
+    if let Some(shared) = shared {
+        let asking: Vec<Digest> = digests.iter().map(|(_, digest)| *digest).collect();
+        if let Ok(found) = shared.fetch(&asking) {
+            known.extend(found);
+        }
+    }
+
+    let mut publishing: Vec<(Digest, Chunks)> = Vec::new();
+    for (id, digest) in &digests {
+        // Another note in this same pass may have had identical text — two
+        // copies of one file, or an empty note beside another empty one.
+        if let Some(vectors) = known.get(digest) {
+            store.insert(id, *digest, vectors.clone());
+            report.fetched += 1;
+            continue;
+        }
+
         let text = index.text(id);
         let pieces = chunks(id.title(), text);
         if pieces.is_empty() {
@@ -461,14 +545,23 @@ pub fn catch_up(store: &mut Store, index: &Index, embedder: &dyn Embedder) -> Re
         }
         match embedder.embed(&pieces) {
             Ok(vectors) if vectors.len() == pieces.len() => {
-                store.insert(id, digest_of(id.title(), text), vectors);
+                store.insert(id, *digest, vectors.clone());
+                known.insert(*digest, vectors.clone());
+                publishing.push((*digest, vectors));
                 report.embedded += 1;
             }
             _ => {
-                report.pending = plan.embed.len() - report.embedded;
+                report.pending = plan.embed.len() - report.embedded - report.fetched;
                 break;
             }
         }
+    }
+
+    // Publishing last, and in one call: a pass that died half way through still
+    // offers what it managed, and a hundred notes is one request rather than a
+    // hundred.
+    if let (Some(shared), false) = (shared, publishing.is_empty()) {
+        let _ = shared.publish(&publishing);
     }
     report
 }
@@ -905,6 +998,134 @@ mod tests {
                 })
                 .collect())
         }
+    }
+
+    /// A shared store standing in for the one on the NAS: a map, plus a count
+    /// of what was offered to it and a switch for being unreachable.
+    #[derive(Default)]
+    struct Peers {
+        held: RefCell<BTreeMap<Digest, Chunks>>,
+        published: RefCell<usize>,
+        unreachable: bool,
+    }
+
+    impl Peers {
+        fn unreachable() -> Self {
+            Self {
+                unreachable: true,
+                ..Self::default()
+            }
+        }
+
+        /// Everything one machine's pass produced, as the next machine would
+        /// find it.
+        fn seeded_from(index: &Index) -> Self {
+            let peers = Self::default();
+            let embedder = Fake::new();
+            let mut store = Store::new(&embedder.model());
+            catch_up_sharing(&mut store, index, &embedder, Some(&peers));
+            peers
+        }
+    }
+
+    impl Shared for Peers {
+        fn fetch(&self, digests: &[Digest]) -> Result<Vec<(Digest, Chunks)>, EmbedError> {
+            if self.unreachable {
+                return Err(EmbedError("no route to host".into()));
+            }
+            let held = self.held.borrow();
+            Ok(digests
+                .iter()
+                .filter_map(|digest| held.get(digest).map(|chunks| (*digest, chunks.clone())))
+                .collect())
+        }
+
+        fn publish(&self, entries: &[(Digest, Chunks)]) -> Result<(), EmbedError> {
+            if self.unreachable {
+                return Err(EmbedError("no route to host".into()));
+            }
+            *self.published.borrow_mut() += entries.len();
+            self.held.borrow_mut().extend(entries.iter().cloned());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_pass_publishes_what_it_embedded() {
+        let index = index_of(&[("A.md", "rust rust"), ("B.md", "milk")]);
+        let peers = Peers::default();
+        let embedder = Fake::new();
+        let mut store = Store::new(&embedder.model());
+
+        let report = catch_up_sharing(&mut store, &index, &embedder, Some(&peers));
+
+        assert_eq!(report.embedded, 2);
+        assert_eq!(report.fetched, 0);
+        assert_eq!(*peers.published.borrow(), 2, "the vectors were not offered");
+    }
+
+    #[test]
+    fn a_second_machine_fetches_the_whole_vault_and_never_calls_the_model() {
+        let index = index_of(&[("A.md", "rust rust"), ("B.md", "milk")]);
+        let peers = Peers::seeded_from(&index);
+
+        // The same vault opening on another machine: same text, so the same
+        // digests, so nothing to pay for.
+        let embedder = Fake::new();
+        let mut store = Store::new(&embedder.model());
+        let report = catch_up_sharing(&mut store, &index, &embedder, Some(&peers));
+
+        assert_eq!(report.fetched, 2);
+        assert_eq!(report.embedded, 0);
+        assert_eq!(embedder.calls(), 0, "the model was called anyway");
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn the_same_note_under_another_id_is_still_a_hit() {
+        // The digest is over the title and the text, so a note in a different
+        // folder on the other machine costs nothing either.
+        let here = index_of(&[("Inbox/A.md", "rust rust")]);
+        let peers = Peers::seeded_from(&here);
+
+        let there = index_of(&[("Archive/2026/A.md", "rust rust")]);
+        let embedder = Fake::new();
+        let mut store = Store::new(&embedder.model());
+        let report = catch_up_sharing(&mut store, &there, &embedder, Some(&peers));
+
+        assert_eq!(report.fetched, 1);
+        assert_eq!(embedder.calls(), 0);
+    }
+
+    #[test]
+    fn an_unreachable_shared_store_costs_nothing_but_the_saving() {
+        let index = index_of(&[("A.md", "rust rust"), ("B.md", "milk")]);
+        let peers = Peers::unreachable();
+        let embedder = Fake::new();
+        let mut store = Store::new(&embedder.model());
+
+        let report = catch_up_sharing(&mut store, &index, &embedder, Some(&peers));
+
+        // Exactly the pass it would have run with no shared store at all.
+        assert_eq!(report.embedded, 2);
+        assert_eq!(report.fetched, 0);
+        assert!(report.pending == 0);
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn two_notes_with_the_same_text_are_embedded_once() {
+        let index = index_of(&[("A.md", "rust rust"), ("Copy of A.md", "rust rust")]);
+        let peers = Peers::default();
+        let embedder = Fake::new();
+        let mut store = Store::new(&embedder.model());
+
+        catch_up_sharing(&mut store, &index, &embedder, Some(&peers));
+
+        // Different titles, so different digests — but a note duplicated
+        // verbatim under the same title would be one call, which is what the
+        // within-pass cache is for.
+        assert_eq!(store.len(), 2);
     }
 
     fn index_of(notes: &[(&str, &str)]) -> Index {

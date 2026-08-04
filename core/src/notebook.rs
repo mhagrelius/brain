@@ -464,6 +464,19 @@ impl Notebook {
         self.vectors_path = Some(path);
     }
 
+    /// Where the shared vector store is, and its token — or `None` when there
+    /// is not one, which is the default.
+    ///
+    /// Both or neither: a URL with no token cannot authenticate and a token
+    /// with no URL has nowhere to go, so half a configuration is treated as
+    /// none rather than as an error nobody would see.
+    pub fn shared_vectors(&self) -> Option<(String, String)> {
+        let url = self.config.vectors_url.clone()?;
+        let token = self.config.vectors_token.clone()?;
+        let (url, token) = (url.trim().to_string(), token.trim().to_string());
+        (!url.is_empty() && !token.is_empty()).then_some((url, token))
+    }
+
     /// The index and store a catch-up pass should run against.
     pub fn catch_up_input(&self) -> (Index, semantic::Store) {
         (self.index.clone(), self.vectors.clone())
