@@ -290,8 +290,21 @@ impl BrainWindow {
         status.add_css_class("status-line");
         status.add_css_class("dimmed");
 
+        // One banner, three conditions — see `notebook::Alert`. Its button is
+        // whatever the current condition offers, and there is at most one:
+        // keeping what you typed is doing nothing, so only the other choice
+        // needs a control.
         let banner = adw::Banner::new("");
         banner.set_revealed(false);
+        banner.connect_button_clicked(clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_| {
+                if let Some(app) = window.brain_application() {
+                    app.resolve_alert();
+                }
+            }
+        ));
 
         let editor_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         editor_box.append(&banner);
@@ -1281,10 +1294,15 @@ impl BrainWindow {
         }
     }
 
-    /// The save banner's text, if it is showing. For tests.
-    pub fn save_error_for_test(&self) -> Option<String> {
+    /// The banner's text and button label, if it is showing. For tests.
+    pub fn banner_for_test(&self) -> Option<(String, Option<String>)> {
         let banner = self.imp().banner.borrow().clone()?;
-        banner.is_revealed().then(|| banner.title().to_string())
+        banner.is_revealed().then(|| {
+            (
+                banner.title().to_string(),
+                banner.button_label().map(|label| label.to_string()),
+            )
+        })
     }
 
     /// Drive a formatting request the way the panel does, for tests.
@@ -1490,14 +1508,18 @@ impl BrainWindow {
         }
     }
 
-    /// Show or clear the "not saving" banner. `None` means saving works.
-    pub fn set_save_error(&self, message: Option<&str>) {
+    /// Show or clear the banner. `None` means nothing is wrong.
+    ///
+    /// `button` is the label for the one action the condition offers, if it
+    /// offers one; clicking it reaches `BrainApplication::resolve_alert`.
+    pub fn set_banner(&self, title: Option<&str>, button: Option<&str>) {
         let Some(banner) = self.imp().banner.borrow().clone() else {
             return;
         };
-        match message {
-            Some(message) => {
-                banner.set_title(message);
+        match title {
+            Some(title) => {
+                banner.set_title(title);
+                banner.set_button_label(button);
                 banner.set_revealed(true);
             }
             None => banner.set_revealed(false),

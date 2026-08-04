@@ -27,7 +27,7 @@ use adw::subclass::prelude::*;
 use gtk::glib::{self, clone};
 
 use crate::model::note::NoteId;
-use crate::model::notebook::{External, Failed, Hit, Mode, Moved, Notebook, Renamed, Saved};
+use crate::model::notebook::{Alert, Failed, Hit, Mode, Moved, Notebook, Renamed, Saved};
 use crate::model::semantic;
 use crate::model::tree::{Row, Sort};
 use crate::model::vault::VaultError;
@@ -408,30 +408,61 @@ impl BrainApplication {
     /// Something changed the vault from outside. Take it on.
     ///
     /// The open note is the delicate part, and the notebook decides what
-    /// happened to it; this only says so.
+    /// happened to it; this only says so. A reload is the one outcome that
+    /// changes what is on screen, and it is also the silent one — nothing was
+    /// unsaved, so there is nothing to ask about.
     fn absorb_external_changes(&self) {
-        let outcome = self.imp().notebook.borrow_mut().absorb_external_changes();
+        let reloaded = matches!(
+            self.imp().notebook.borrow_mut().absorb_external_changes(),
+            crate::model::notebook::External::Reloaded
+        );
         self.refresh_notes();
         self.schedule_catch_up();
+        if reloaded {
+            self.show_open_note();
+        }
+        self.refresh_banner();
+    }
 
+    /// Put whatever the notebook is worried about on the banner.
+    ///
+    /// One condition at a time, highest priority first, and at most one button
+    /// — keeping what you typed is doing nothing, so only the other choice
+    /// needs a control.
+    fn refresh_banner(&self) {
         let Some(window) = self.window() else {
             return;
         };
-        match outcome {
-            External::Quiet => {}
-            External::Reloaded => {
-                window.set_save_error(None);
-                self.show_open_note();
+        match self.imp().notebook.borrow().alert() {
+            None => window.set_banner(None, None),
+            Some(Alert::NotSaving(error)) => {
+                window.set_banner(Some(&format!("Not saving: {error}")), None)
             }
-            External::Vanished { id } => window.set_save_error(Some(&format!(
-                "“{}” was deleted or moved outside Brain. It is still open here.",
-                id.title()
-            ))),
-            External::Diverged { id, .. } => window.set_save_error(Some(&format!(
-                "“{}” changed on disk. Saving will overwrite that.",
-                id.title()
-            ))),
+            Some(Alert::Diverged(id)) => window.set_banner(
+                Some(&format!(
+                    "“{}” changed on disk — saving will overwrite that",
+                    id.title()
+                )),
+                Some("Reload"),
+            ),
+            Some(Alert::Vanished(id)) => window.set_banner(
+                Some(&format!(
+                    "“{}” was deleted outside Brain and is still open here",
+                    id.title()
+                )),
+                Some("Restore"),
+            ),
         }
+    }
+
+    /// Take the banner up on what it is offering.
+    pub fn resolve_alert(&self) {
+        if self.imp().notebook.borrow_mut().resolve_alert() {
+            self.refresh_notes();
+            self.show_open_note();
+            self.reselect();
+        }
+        self.refresh_banner();
     }
 
     // ---- vectors ----
@@ -760,22 +791,16 @@ impl BrainApplication {
         match outcome {
             Saved::Clean => {}
             Saved::Written => {
-                if let Some(window) = self.window() {
-                    window.set_save_error(None);
-                }
                 // Rebuilding the list clears the highlight, so put it back.
                 self.refresh_notes();
                 self.refresh_backlinks();
                 self.reselect();
+                self.refresh_banner();
             }
             // Saving is broken. Say so; the note stays dirty so the next tick
             // tries again — a note that failed to save must not be quietly
             // forgotten.
-            Saved::Failed(error) => {
-                if let Some(window) = self.window() {
-                    window.set_save_error(Some(&format!("Not saving: {error}")));
-                }
-            }
+            Saved::Failed(_) => self.refresh_banner(),
         }
     }
 

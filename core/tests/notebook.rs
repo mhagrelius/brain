@@ -11,7 +11,7 @@
 use std::path::Path;
 
 use brain_core::note::NoteId;
-use brain_core::notebook::{External, Failed, Moved, Notebook, Renamed, Saved};
+use brain_core::notebook::{Alert, External, Failed, Moved, Notebook, Renamed, Saved};
 use brain_core::vault::VaultError;
 
 /// A notebook over a fresh vault seeded with `notes`, as (relative path, text).
@@ -330,6 +330,129 @@ fn a_note_deleted_outside_brain_stays_open_and_says_so() {
     // Still open here: losing what is on screen because a file moved is worse
     // than showing a note that no longer has a file.
     assert!(notebook.open_note_text().is_some());
+}
+
+// ---- what the banner says, when several things are wrong ----
+
+#[test]
+fn a_divergence_puts_a_reload_offer_on_the_banner() {
+    let (dir, mut notebook) = notebook(&[("Note.md", "before")]);
+    notebook.load_note(&id("Note.md")).expect("open");
+    notebook.flush("what I typed");
+    std::fs::write(dir.path().join("Note.md"), "what they typed").expect("write");
+
+    notebook.absorb_external_changes();
+
+    assert_eq!(notebook.alert(), Some(Alert::Diverged(id("Note.md"))));
+}
+
+#[test]
+fn resolving_a_divergence_takes_the_disk_version_and_clears_the_banner() {
+    let (dir, mut notebook) = notebook(&[("Note.md", "before")]);
+    notebook.load_note(&id("Note.md")).expect("open");
+    notebook.flush("what I typed");
+    std::fs::write(dir.path().join("Note.md"), "what they typed").expect("write");
+    notebook.absorb_external_changes();
+
+    assert!(notebook.resolve_alert());
+
+    assert_eq!(
+        notebook.open_note_text().map(|(_, text)| text),
+        Some("what they typed".to_string())
+    );
+    assert_eq!(notebook.alert(), None);
+}
+
+#[test]
+fn saving_through_a_divergence_keeps_your_version_and_clears_the_banner() {
+    let (dir, mut notebook) = notebook(&[("Note.md", "before")]);
+    notebook.load_note(&id("Note.md")).expect("open");
+    notebook.flush("what I typed");
+    std::fs::write(dir.path().join("Note.md"), "what they typed").expect("write");
+    notebook.absorb_external_changes();
+
+    // Doing nothing is how you keep your own edits, and the next save is what
+    // "nothing" turns into.
+    assert!(matches!(notebook.save_now(), Saved::Written));
+
+    assert_eq!(read(dir.path(), "Note.md"), "what I typed");
+    assert_eq!(notebook.alert(), None);
+}
+
+#[test]
+fn restoring_a_vanished_note_writes_it_back() {
+    let (dir, mut notebook) = notebook(&[("Note.md", "the only copy")]);
+    notebook.load_note(&id("Note.md")).expect("open");
+    std::fs::remove_file(dir.path().join("Note.md")).expect("remove");
+    notebook.absorb_external_changes();
+
+    assert_eq!(notebook.alert(), Some(Alert::Vanished(id("Note.md"))));
+    assert!(notebook.resolve_alert());
+
+    assert_eq!(read(dir.path(), "Note.md"), "the only copy");
+    assert_eq!(notebook.alert(), None);
+    // And it is back in the index, not just back on disk.
+    assert_eq!(notebook.listed_notes().len(), 1);
+}
+
+#[test]
+fn a_vanished_note_that_comes_back_clears_itself() {
+    let (dir, mut notebook) = notebook(&[("Note.md", "text")]);
+    notebook.load_note(&id("Note.md")).expect("open");
+    std::fs::remove_file(dir.path().join("Note.md")).expect("remove");
+    notebook.absorb_external_changes();
+    assert!(notebook.alert().is_some());
+
+    // Restored from the trash, or a `git checkout` that undid the delete.
+    std::fs::write(dir.path().join("Note.md"), "text").expect("write");
+    notebook.absorb_external_changes();
+
+    assert_eq!(notebook.alert(), None);
+}
+
+#[test]
+fn opening_another_note_clears_the_previous_one_s_banner() {
+    let (dir, mut notebook) = notebook(&[("A.md", "before"), ("B.md", "other")]);
+    notebook.load_note(&id("A.md")).expect("open");
+    notebook.flush("what I typed");
+    std::fs::write(dir.path().join("A.md"), "what they typed").expect("write");
+    notebook.absorb_external_changes();
+    assert!(notebook.alert().is_some());
+
+    notebook.load_note(&id("B.md")).expect("open");
+
+    assert_eq!(notebook.alert(), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_save_failure_outranks_a_divergence() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (dir, mut notebook) = notebook(&[("Note.md", "before")]);
+    notebook.load_note(&id("Note.md")).expect("open");
+    notebook.flush("what I typed");
+    std::fs::write(dir.path().join("Note.md"), "what they typed").expect("write");
+    notebook.absorb_external_changes();
+    assert!(matches!(notebook.alert(), Some(Alert::Diverged(_))));
+
+    // Writing now fails: the vault cannot take the temporary file.
+    let readable = std::fs::Permissions::from_mode(0o555);
+    std::fs::set_permissions(dir.path(), readable).expect("chmod");
+    let outcome = notebook.save_now();
+
+    assert!(matches!(outcome, Saved::Failed(_)), "the write succeeded");
+    // Work is being lost *now*; in a divergence both versions are safe. A save
+    // failure hidden behind a divergence would be a lost note.
+    assert!(
+        matches!(notebook.alert(), Some(Alert::NotSaving(_))),
+        "the divergence was still on the banner: {:?}",
+        notebook.alert()
+    );
+
+    // Writable again, or the temporary directory cannot be cleaned up.
+    let writable = std::fs::Permissions::from_mode(0o755);
+    std::fs::set_permissions(dir.path(), writable).expect("chmod back");
 }
 
 // ---- what the sidebar asks for ----

@@ -597,7 +597,8 @@ Where the finished thing differs from this document, this is what happened.
   `core/src/notebook.rs` rather than a `glib::wrapper!`. `BrainApplication` is
   now the parts that genuinely need a toolkit — actions, the save tick, the
   file monitors, the worker threads — plus the translation from an outcome to
-  a toast. It went from 1,728 lines to about 800.
+  a toast. It went from 1,728 lines to 1,135, and the 1,080 lines of
+  `notebook.rs` that came out of it are testable without a display.
 
   The design of the seam is that **a notebook method reports what happened to
   the vault, not what to put on screen**: `Renamed::Done { links }` says two
@@ -616,6 +617,26 @@ Where the finished thing differs from this document, this is what happened.
   `Hit` and `Mode` moved with it. What a query is matched against and what came
   back are the same questions on any platform, so they sit beside the search
   that answers them; `ui/palette.rs` keeps only the placeholder wording.
+- **The external-change banner became a real choice, and gained a priority.**
+  This document said the banner offers reload or keep; the code only warned —
+  "changed on disk. Saving will overwrite that." — with no control on it. That
+  was tolerable while external changes were rare and usually your own `git
+  checkout`. It stops being tolerable the moment a sync client is writing to
+  the vault, so it was fixed before one exists.
+
+  There is one button, not two, because **keeping what you typed is doing
+  nothing**: the buffer already holds it and the next save writes it over the
+  file. Only the other choice needs a control, so a divergence offers `Reload`
+  and a note deleted underneath you offers `Restore` — the second is new, and
+  closes a case where the editor held the only copy left and the only way to
+  get it back on disk was to type a character and wait for the tick.
+
+  The three conditions are held separately rather than in one slot, and
+  `Notebook::alert` picks between them. **A save failure outranks both others**,
+  because it is the only one where work is being lost now: in a divergence or a
+  vanishing, both versions are safe and the user is being asked which they
+  want. A divergence hidden behind a save failure is a nuisance; a save failure
+  hidden behind a divergence is a lost note.
 
 ## Settled
 

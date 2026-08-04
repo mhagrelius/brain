@@ -176,10 +176,30 @@ const CASES: &[Case] = &[
             window.select_note(Some(&NoteId::from_relative("Meetings.md")));
         },
     ),
-    ("the save banner shows and clears", |window, _| {
-        window.set_save_error(Some("Not saving: disk full"));
-        window.set_save_error(None);
-    }),
+    (
+        "the banner shows, offers its one action, and clears",
+        |window, _| {
+            window.set_banner(Some("Not saving: disk full"), None);
+            assert_eq!(
+                window.banner_for_test(),
+                Some(("Not saving: disk full".to_string(), None))
+            );
+
+            // A condition that offers a way out carries exactly one button: the
+            // other choice is always "do nothing".
+            window.set_banner(Some("“Note” changed on disk"), Some("Reload"));
+            assert_eq!(
+                window.banner_for_test(),
+                Some((
+                    "“Note” changed on disk".to_string(),
+                    Some("Reload".to_string())
+                ))
+            );
+
+            window.set_banner(None, None);
+            assert_eq!(window.banner_for_test(), None);
+        },
+    ),
     ("a toast can be raised with no note open", |window, _| {
         window.toast("Saved");
     }),

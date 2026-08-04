@@ -189,6 +189,27 @@ fn main() {
         );
     }
 
+    // The banner, offering the one action its condition has. Rendered on its
+    // own because the condition is rare and the shot is the only way to see
+    // that the button reads as a way out rather than as a warning about one.
+    let diverged: BrainWindow = glib::Object::new();
+    diverged.set_rows(&rows);
+    diverged.set_tags(&index.tags());
+    diverged.show_note(Some((&opened, &note.to_text())));
+    diverged.set_banner(
+        Some("“Rust ownership” changed on disk — saving will overwrite that"),
+        Some("Reload"),
+    );
+    if let Some(content) = diverged.content() {
+        diverged.set_content(gtk::Widget::NONE);
+        render(
+            &content,
+            1100,
+            600,
+            &format!("{out}/banner-{}.png", scheme(dark)),
+        );
+    }
+
     // The window at first start: a vault with nothing in it yet.
     let fresh: BrainWindow = glib::Object::new();
     fresh.set_rows(&[]);

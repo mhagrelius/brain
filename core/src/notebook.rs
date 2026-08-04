@@ -140,6 +140,27 @@ pub enum External {
     Vanished { id: NoteId },
 }
 
+/// What the banner is saying, when more than one thing could be wrong at once.
+///
+/// The order of the variants is the priority order, and it is deliberate.
+/// [`Alert::NotSaving`] outranks the others because it is the only one where
+/// work is being lost *now*: in both of the others the two versions are safely
+/// on disk and in the editor, and the user is being asked which they want. A
+/// divergence hidden behind a save failure would be a nuisance; a save failure
+/// hidden behind a divergence would be a lost note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Alert {
+    /// Writing the open note is failing, and the note is still dirty.
+    NotSaving(String),
+    /// The open note changed on disk and has unsaved local edits. Both
+    /// versions still exist; [`Notebook::take_disk_version`] picks theirs and
+    /// doing nothing keeps yours.
+    Diverged(NoteId),
+    /// The open note's file is gone from the vault. It is still in the editor,
+    /// and [`Notebook::restore_open_note`] writes it back.
+    Vanished(NoteId),
+}
+
 /// What [`Notebook::attach_files`] managed.
 #[derive(Debug, Default, PartialEq)]
 pub struct Attached {
@@ -189,6 +210,13 @@ pub struct Notebook {
     /// The last query embedded, and its vector. One entry, because the only
     /// query worth having a vector for is the one in the palette now.
     query_vector: Option<(String, Vec<f32>)>,
+    /// The three conditions the banner can be reporting. Held separately
+    /// rather than as one slot, because they arise and clear independently —
+    /// a divergence that was pushed off the banner by a save failure has to
+    /// still be there when the save starts working again.
+    not_saving: Option<String>,
+    diverged: Option<NoteId>,
+    vanished: Option<NoteId>,
 }
 
 impl Notebook {
@@ -269,6 +297,7 @@ impl Notebook {
         self.buffer = None;
         self.on_disk = None;
         self.dirty = false;
+        self.clear_alerts();
         self.vault = Some(Vault::new(root));
         self.config.vault = Some(root.to_path_buf());
         self.config.last_note = None;
@@ -308,6 +337,35 @@ impl Notebook {
         problems
     }
 
+    /// What the banner should be reporting, if anything.
+    ///
+    /// Highest priority first — see [`Alert`] for why that order.
+    pub fn alert(&self) -> Option<Alert> {
+        if let Some(message) = &self.not_saving {
+            return Some(Alert::NotSaving(message.clone()));
+        }
+        if let Some(id) = &self.diverged {
+            return Some(Alert::Diverged(id.clone()));
+        }
+        self.vanished.clone().map(Alert::Vanished)
+    }
+
+    fn clear_alerts(&mut self) {
+        self.not_saving = None;
+        self.diverged = None;
+        self.vanished = None;
+    }
+
+    /// Act on whatever the banner is offering. `false` when there is nothing to
+    /// do, which is the save-failure case: the next tick retries by itself.
+    pub fn resolve_alert(&mut self) -> bool {
+        match self.alert() {
+            Some(Alert::Diverged(_)) => self.take_disk_version(),
+            Some(Alert::Vanished(_)) => self.restore_open_note(),
+            Some(Alert::NotSaving(_)) | None => false,
+        }
+    }
+
     /// Something changed the vault from outside. Take it on.
     pub fn absorb_external_changes(&mut self) -> External {
         self.rescan();
@@ -316,8 +374,12 @@ impl Notebook {
             return External::Quiet;
         };
         if !self.index.contains(&id) {
+            self.vanished = Some(id.clone());
             return External::Vanished { id };
         }
+        // It came back — restored from the trash, or a `git checkout` that
+        // undid the delete.
+        self.vanished = None;
         let Some(vault) = self.vault.clone() else {
             return External::Quiet;
         };
@@ -337,11 +399,13 @@ impl Notebook {
         self.on_disk = Some(text.clone());
 
         if self.dirty {
+            self.diverged = Some(id.clone());
             return External::Diverged { id, on_disk: text };
         }
 
         // Nothing unsaved, so the file is the truth.
         self.buffer = Some(note);
+        self.diverged = None;
         External::Reloaded
     }
 
@@ -362,6 +426,27 @@ impl Notebook {
         self.on_disk = Some(note.to_text());
         self.buffer = Some(note);
         self.dirty = false;
+        self.diverged = None;
+        true
+    }
+
+    /// Write the open note back to a path it has disappeared from.
+    ///
+    /// The counterpart to [`Self::take_disk_version`] for a note deleted
+    /// outside Brain: the editor is holding the only copy left, and without
+    /// this the only way to get it back on disk is to type a character and
+    /// wait for the tick, which nobody would guess at.
+    pub fn restore_open_note(&mut self) -> bool {
+        let (Some(vault), Some(note)) = (self.vault.clone(), self.buffer.clone()) else {
+            return false;
+        };
+        if vault.write(&note).is_err() {
+            return false;
+        }
+        self.on_disk = Some(note.to_text());
+        self.index.update(&note);
+        self.dirty = false;
+        self.vanished = None;
         true
     }
 
@@ -618,6 +703,9 @@ impl Notebook {
         let Some(vault) = self.vault.clone() else {
             return Ok(());
         };
+        // Every banner condition is about the note being left, so none of them
+        // survives opening another one.
+        self.clear_alerts();
         match vault.read(id) {
             Ok(note) => {
                 self.on_disk = Some(note.to_text());
@@ -692,9 +780,18 @@ impl Notebook {
                 self.dirty = false;
                 self.on_disk = Some(note.to_text());
                 self.index.update(&note);
+                // A successful write settles all three: saving is evidently
+                // working, the file exists, and a divergence has just been
+                // decided in favour of what was on screen.
+                self.not_saving = None;
+                self.diverged = None;
+                self.vanished = None;
                 Saved::Written
             }
-            Err(error) => Saved::Failed(error),
+            Err(error) => {
+                self.not_saving = Some(error.to_string());
+                Saved::Failed(error)
+            }
         }
     }
 
@@ -901,6 +998,7 @@ impl Notebook {
         self.buffer = None;
         self.on_disk = None;
         self.open = None;
+        self.clear_alerts();
 
         vault.delete(&id)?;
         self.index.remove(&id);
