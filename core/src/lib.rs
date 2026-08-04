@@ -17,6 +17,7 @@ pub mod index;
 // `model::markdown::…` call site still means what it did.
 pub use quill as markdown;
 pub mod note;
+pub mod notebook;
 pub mod search;
 pub mod semantic;
 pub mod tree;

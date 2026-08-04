@@ -23,7 +23,9 @@ See `PLAN.md` for where this is going: the split exists so a second shell on ano
 
 `core/src/` is pure logic with no GTK types. `src/ui/` is widgets and the application. Read `DESIGN.md` and `README.md` before proposing structural changes; both are current.
 
-**`BrainApplication` is the only thing that writes a file or mutates the index.** Widgets emit signals of intent and change nothing themselves, so there is exactly one place a note can be lost. Keep new behaviour on that side of the line.
+**`Notebook` (`core/src/notebook.rs`) is the only thing that writes a file or mutates the index.** Widgets emit signals of intent and change nothing themselves, so there is exactly one place a note can be lost. `BrainApplication` holds it in a `RefCell` and does what only a toolkit can: actions, the save tick, file monitors, worker threads, and turning an outcome into a toast. Keep new behaviour on the notebook's side of the line.
+
+**A notebook method returns what happened, not what to display.** `Renamed::Done { links }` carries the count; the sentence about it belongs to the shell, because a second shell will word it differently. That is also what the tests assert on.
 
 **Push logic down into `brain-core`.** A rule that lives there is tested by `cargo test` with no display; the same rule inside a widget is only reachable through the GTK harness. The sidebar's tree is the worked example — `core/src/tree.rs` decides what the rows are, and the widget only draws them.
 
@@ -34,6 +36,8 @@ See `PLAN.md` for where this is going: the split exists so a second shell on ano
 Widget tests need a display; model tests do not and are the bulk of the suite. `test.sh` sets `GTK_A11Y=none` and `GSETTINGS_BACKEND=memory` so tests never touch real user state — keep that true for anything new.
 
 GTK is thread-affine, so `tests/widgets.rs` and `tests/lifecycle.rs` are each **one `#[test]` over a table** — `CASES` and `STEPS`. Add a case to the array; a second `#[test]` that touches GTK will fail. `lifecycle.rs` steps run in order against one shared vault, so a step that leaves a note behind breaks a later assertion.
+
+`core/tests/notebook.rs` has none of those constraints — a plain `#[test]` per scenario, no display, no shared vault. **A new rule about what happens to the vault goes there, not in `lifecycle.rs`.** Reserve `lifecycle.rs` for what genuinely needs a widget in the loop.
 
 ## Conventions
 

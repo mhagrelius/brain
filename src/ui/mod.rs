@@ -26,7 +26,10 @@ pub use details_panel::DetailsPanel;
 pub use editor::Editor;
 pub use embedder::{Llama, DEFAULT_EMBEDDING_URL};
 pub use link_popover::LinkPopover;
-pub use palette::{Hit, Mode, Palette};
+// Re-exported from the core, where the search that produces them lives, under
+// the path the widgets have always used them by.
+pub use crate::model::notebook::{Hit, Mode};
+pub use palette::Palette;
 pub use row_object::RowObject;
 pub use sidebar::{Dragged, Sidebar};
 pub use tag_tree::TagTree;

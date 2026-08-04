@@ -1,9 +1,22 @@
-//! The application: owns the vault, the index, and the save tick.
+//! The application: the GTK side of the notebook.
 //!
-//! Everything that writes a file funnels through here. The window reports what
-//! the user did; this object applies it to the vault, updates the index, and
-//! pushes the result back down. Nothing else calls `write`, so there is exactly
-//! one place a note can be lost.
+//! What Brain *does* to a vault lives in [`brain_core::notebook::Notebook`].
+//! What is left here is what only a toolkit can do — actions and accelerators,
+//! the save tick, the file monitors, the worker threads, and turning a
+//! notebook's outcome into a toast or a redraw.
+//!
+//! The rule has not moved, only its address: the notebook is the only thing
+//! that writes a file or mutates the index, and every widget still reports
+//! intent rather than acting on it. What changed is that the rule is now
+//! testable without a display.
+//!
+//! # Borrowing
+//!
+//! The notebook lives in a `RefCell` and the window can re-enter this object
+//! from a callback, so every method takes the borrow, gets its answer, and
+//! drops it *before* touching a widget. `let outcome = { … borrow_mut() … };`
+//! is the shape; a `match` whose scrutinee is still borrowing would panic the
+//! first time an arm called back in.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -13,15 +26,11 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib::{self, clone};
 
-use crate::model::bm25::Bm25;
-use crate::model::config::Config;
-use crate::model::index::{Index, Resolution};
-use crate::model::markdown;
-use crate::model::note::{Note, NoteId};
-use crate::model::search;
+use crate::model::note::NoteId;
+use crate::model::notebook::{External, Failed, Hit, Mode, Moved, Notebook, Renamed, Saved};
 use crate::model::semantic;
-use crate::model::tree::{self, Listed, Row, Sort};
-use crate::model::vault::{Vault, VaultError};
+use crate::model::tree::{Row, Sort};
+use crate::model::vault::VaultError;
 use crate::ui::{BrainWindow, Dragged, Watcher};
 use crate::APP_ID;
 
@@ -42,52 +51,19 @@ mod imp {
 
     #[derive(Default)]
     pub struct BrainApplication {
-        pub config: RefCell<Config>,
-        pub config_path: RefCell<PathBuf>,
-        pub vault: RefCell<Option<Vault>>,
-        pub index: RefCell<Index>,
-        /// The note in the editor, if any.
-        pub open: RefCell<Option<NoteId>>,
-        /// The open note as it stands, including unsaved edits.
-        pub buffer: RefCell<Option<Note>>,
-        /// The text of the open note as it last stood *on disk*, whether Brain
-        /// put it there or read it from there. The watcher cannot tell whose
-        /// write it is reporting, so this is what tells Brain's own saves apart
-        /// from somebody else's edit.
-        pub on_disk: RefCell<Option<String>>,
-        pub dirty: Cell<bool>,
+        /// Everything Brain knows about the vault. The only writer.
+        pub notebook: RefCell<Notebook>,
         pub tick: RefCell<Option<glib::SourceId>>,
         pub window: RefCell<Option<BrainWindow>>,
-        /// The tag filtering the note list, if any.
-        pub filter: RefCell<Option<String>>,
-        /// What the sidebar's search entry holds. While it is not empty the
-        /// sidebar shows results rather than the tree.
-        pub query: RefCell<String>,
-        /// Which folders are open in the sidebar.
-        pub expanded: RefCell<std::collections::BTreeSet<String>>,
-        pub sort: Cell<Sort>,
-        /// The folder a new note goes in: whichever was last chosen in the
-        /// sidebar, falling back to the open note's.
-        pub target_folder: RefCell<Option<String>>,
         /// Watches the vault for changes made outside Brain. Dropped and
         /// rebuilt whenever the vault changes, which also cancels its monitors.
         pub watcher: RefCell<Option<Watcher>>,
-        /// BM25 counts over the current index, rebuilt with it. Cheap enough to
-        /// rebuild and wrong enough to keep if it is not.
-        pub lexical: RefCell<Bm25>,
-        /// The vectors, and where they are cached. Derived data: losing the
-        /// file costs one pass of embedding.
-        pub vectors: RefCell<semantic::Store>,
-        pub vectors_path: RefCell<Option<PathBuf>>,
         /// A catch-up pass is on a worker thread. A second one must not start
         /// beside it — they would both write the store — so a change arriving
         /// mid-pass sets `restack` and the pass runs again when it lands.
         pub catching_up: Cell<bool>,
         pub restack: Cell<bool>,
         pub catchup_tick: RefCell<Option<glib::SourceId>>,
-        /// The last query embedded, and its vector. One entry, because the only
-        /// query worth having a vector for is the one in the palette now.
-        pub query_vector: RefCell<Option<(String, Vec<f32>)>>,
     }
 
     #[glib::object_subclass]
@@ -132,33 +108,33 @@ mod imp {
             };
             // Restore the size before presenting, so the window never appears
             // at one size and jumps to another.
-            {
-                let config = self.config.borrow();
-                if let (Some(width), Some(height)) = (config.window_width, config.window_height) {
-                    window.set_default_size(width.max(360), height.max(360));
-                }
-                if config.window_maximized {
-                    window.maximize();
-                }
+            let (size, maximized, reading, root, has_vault) = {
+                let notebook = self.notebook.borrow();
+                let config = notebook.config();
+                (
+                    config.window_width.zip(config.window_height),
+                    config.window_maximized,
+                    config.reading_mode,
+                    notebook.vault_root(),
+                    notebook.has_vault(),
+                )
+            };
+            if let Some((width, height)) = size {
+                window.set_default_size(width.max(360), height.max(360));
             }
-            // Outside the borrow above: this reaches back into the config to
-            // record the mode, and would deadlock against it.
-            let reading = self.config.borrow().reading_mode;
+            if maximized {
+                window.maximize();
+            }
             window.set_reading(reading);
             window.present();
+            window.set_vault_root(root);
 
-            window.set_vault_root(
-                self.vault
-                    .borrow()
-                    .as_ref()
-                    .map(|vault| vault.root().to_path_buf()),
-            );
             obj.refresh_notes();
             obj.restore_last_note();
 
             // No vault yet: ask, rather than showing an empty list that looks
             // like an empty vault.
-            if self.vault.borrow().is_none() {
+            if !has_vault {
                 window.choose_vault();
             }
         }
@@ -305,35 +281,18 @@ impl BrainApplication {
     // ---- configuration and the vault ----
 
     fn load_config(&self) {
-        let imp = self.imp();
-        let path = crate::model::config::default_path();
-        let (config, _outcome) = Config::load(&path);
-        imp.config_path.replace(path);
-
-        if let Some(root) = config.vault.clone() {
-            if root.is_dir() {
-                imp.vault.replace(Some(Vault::new(root)));
-            }
-        }
-        imp.sort.set(Sort::from_name(&config.sort));
-        imp.expanded
-            .replace(config.expanded_folders.iter().cloned().collect());
-        imp.config.replace(config);
-        self.load_vectors();
-        self.rescan();
+        let problems = {
+            let mut notebook = self.imp().notebook.borrow_mut();
+            notebook.load_config(crate::model::config::default_path());
+            notebook.rescan()
+        };
+        self.report_problems(&problems);
+        self.schedule_catch_up();
         self.start_watching();
     }
 
     fn save_config(&self) {
-        let imp = self.imp();
-        let path = imp.config_path.borrow().clone();
-        {
-            let mut config = imp.config.borrow_mut();
-            config.sort = imp.sort.get().as_str().to_string();
-            config.expanded_folders = imp.expanded.borrow().iter().cloned().collect();
-        }
-        let config = imp.config.borrow().clone();
-        if let Err(error) = config.save(&path) {
+        if let Err(error) = self.imp().notebook.borrow_mut().save_config() {
             // Losing this costs one trip through the folder chooser, so it is
             // worth a warning and not worth a dialog.
             glib::g_warning!("brain", "could not save config: {error}");
@@ -350,9 +309,12 @@ impl BrainApplication {
         let Some(window) = self.window() else {
             return;
         };
-        let imp = self.imp();
-        let mut config = imp.config.borrow_mut();
-        config.window_maximized = window.is_maximized();
+        let maximized = window.is_maximized();
+        let (width, height) = (window.width(), window.height());
+
+        let mut notebook = self.imp().notebook.borrow_mut();
+        let config = notebook.config_mut();
+        config.window_maximized = maximized;
         // A maximised window reports the maximised size, which is not the size
         // to go back to when it is unmaximised again.
         //
@@ -360,51 +322,41 @@ impl BrainApplication {
         // still has one, and again from `shutdown`, where it may already be
         // unrealised and reports 0×0 — and the second call would otherwise
         // overwrite the first, so the app reopened at its minimum size.
-        if !window.is_maximized() {
-            let (width, height) = (window.width(), window.height());
-            if width > 0 && height > 0 {
-                config.window_width = Some(width);
-                config.window_height = Some(height);
-            }
+        if !maximized && width > 0 && height > 0 {
+            config.window_width = Some(width);
+            config.window_height = Some(height);
         }
     }
 
     /// Remember which mode the window is in, for the next launch.
     pub fn remember_reading(&self, reading: bool) {
-        self.imp().config.borrow_mut().reading_mode = reading;
+        self.imp().notebook.borrow_mut().config_mut().reading_mode = reading;
     }
 
     /// The mode that would be written to the config.
     pub fn remembered_reading(&self) -> bool {
-        self.imp().config.borrow().reading_mode
+        self.imp().notebook.borrow().config().reading_mode
     }
 
     /// The window size that would be written to the config.
     pub fn remembered_size(&self) -> Option<(i32, i32)> {
-        let config = self.imp().config.borrow();
+        let notebook = self.imp().notebook.borrow();
+        let config = notebook.config();
         config.window_width.zip(config.window_height)
     }
 
     /// Point at a different vault folder.
     pub fn set_vault(&self, root: &Path) {
-        let imp = self.imp();
         self.flush_open_note();
         self.save_now();
 
-        imp.vault.replace(Some(Vault::new(root)));
-        imp.open.replace(None);
-        imp.buffer.replace(None);
-        imp.config.borrow_mut().vault = Some(root.to_path_buf());
-        imp.config.borrow_mut().last_note = None;
+        let problems = self.imp().notebook.borrow_mut().set_vault(root);
         self.save_config();
-
-        // Before the rescan: the rescan schedules a catch-up, and it should
-        // start from whatever this vault already had embedded rather than from
-        // the previous vault's vectors.
-        self.load_vectors();
-        self.rescan();
+        self.report_problems(&problems);
+        self.schedule_catch_up();
         self.start_watching();
         self.refresh_notes();
+
         if let Some(window) = self.window() {
             window.set_vault_root(Some(root.to_path_buf()));
         }
@@ -412,20 +364,23 @@ impl BrainApplication {
     }
 
     pub fn reload_vault(&self) {
-        self.rescan();
+        let problems = self.imp().notebook.borrow_mut().reload_vault();
+        self.report_problems(&problems);
+        self.schedule_catch_up();
         self.refresh_notes();
+        self.show_open_note();
+    }
 
-        // Taken out of the RefCell before anything else runs: `load_note`
-        // replaces `open`, and holding the borrow across it panics.
-        let open = self.imp().open.borrow().clone();
-        // The open note may have been renamed or deleted outside the app.
-        match open.filter(|id| self.imp().index.borrow().contains(id)) {
-            Some(id) => self.load_note(&id),
-            None => {
-                self.imp().open.replace(None);
-                self.imp().buffer.replace(None);
-                self.show_open_note();
-            }
+    /// One file with the wrong permissions must not stop the app opening, but
+    /// it must not be silent either.
+    fn report_problems(&self, problems: &[VaultError]) {
+        let Some(window) = self.window() else {
+            return;
+        };
+        match problems.len() {
+            0 => {}
+            1 => window.toast(&format!("Could not read {}", problems[0])),
+            count => window.toast(&format!("Could not read {count} files")),
         }
     }
 
@@ -436,11 +391,11 @@ impl BrainApplication {
         // the vault has just been pointed somewhere else.
         imp.watcher.replace(None);
 
-        let Some(vault) = imp.vault.borrow().clone() else {
+        let Some(root) = imp.notebook.borrow().vault_root() else {
             return;
         };
         let watcher = Watcher::new(
-            vault.root(),
+            &root,
             clone!(
                 #[weak(rename_to = app)]
                 self,
@@ -452,90 +407,30 @@ impl BrainApplication {
 
     /// Something changed the vault from outside. Take it on.
     ///
-    /// The open note is the delicate part: reloading it would throw away
-    /// whatever is being typed. So an edited note keeps what is in the editor
-    /// and says the file moved underneath it; an unedited one is reloaded
-    /// silently, which is what makes `git checkout` feel right.
+    /// The open note is the delicate part, and the notebook decides what
+    /// happened to it; this only says so.
     fn absorb_external_changes(&self) {
-        let imp = self.imp();
-        let open = imp.open.borrow().clone();
-
-        self.rescan();
+        let outcome = self.imp().notebook.borrow_mut().absorb_external_changes();
         self.refresh_notes();
+        self.schedule_catch_up();
 
-        let Some(id) = open else {
-            return;
-        };
         let Some(window) = self.window() else {
             return;
         };
-
-        if !imp.index.borrow().contains(&id) {
-            window.set_save_error(Some(&format!(
+        match outcome {
+            External::Quiet => {}
+            External::Reloaded => {
+                window.set_save_error(None);
+                self.show_open_note();
+            }
+            External::Vanished { id } => window.set_save_error(Some(&format!(
                 "“{}” was deleted or moved outside Brain. It is still open here.",
                 id.title()
-            )));
-            return;
-        }
-
-        let Some(note) = imp
-            .vault
-            .borrow()
-            .as_ref()
-            .and_then(|vault| vault.read(&id).ok())
-        else {
-            return;
-        };
-        let text = note.to_text();
-
-        // An event is not a change. The watcher fires for Brain's own saves as
-        // loudly as for anyone else's, so what counts is whether the file
-        // differs from what Brain last put there or read from there —
-        // otherwise typing raises a "changed on disk" warning every two
-        // seconds, about your own keystrokes.
-        if imp.on_disk.borrow().as_deref() == Some(text.as_str()) {
-            return;
-        }
-        imp.on_disk.replace(Some(text));
-
-        if imp.dirty.get() {
-            window.set_save_error(Some(&format!(
+            ))),
+            External::Diverged { id, .. } => window.set_save_error(Some(&format!(
                 "“{}” changed on disk. Saving will overwrite that.",
                 id.title()
-            )));
-            return;
-        }
-
-        // Nothing unsaved, so the file is the truth.
-        imp.buffer.replace(Some(note));
-        window.set_save_error(None);
-        self.show_open_note();
-    }
-
-    fn rescan(&self) {
-        let imp = self.imp();
-        let Some(vault) = imp.vault.borrow().clone() else {
-            imp.index.replace(Index::default());
-            imp.lexical.replace(Bm25::default());
-            return;
-        };
-
-        let (notes, problems) = vault.scan();
-        imp.index.replace(Index::build(&notes));
-        imp.lexical.replace(Bm25::build(&imp.index.borrow()));
-        // Whatever changed — a save here, a `git pull` behind the app's back,
-        // or a folder dragged in Nautilus — the vectors are now behind the
-        // vault by exactly the difference the planner will find.
-        self.schedule_catch_up();
-
-        // One file with the wrong permissions must not stop the app opening,
-        // but it must not be silent either.
-        if let Some(window) = self.window() {
-            match problems.len() {
-                0 => {}
-                1 => window.toast(&format!("Could not read {}", problems[0])),
-                count => window.toast(&format!("Could not read {count} files")),
-            }
+            ))),
         }
     }
 
@@ -554,7 +449,7 @@ impl BrainApplication {
         if let Some(pending) = imp.catchup_tick.take() {
             pending.remove();
         }
-        if imp.vault.borrow().is_none() {
+        if !imp.notebook.borrow().has_vault() {
             return;
         }
         let source = glib::timeout_add_local_once(
@@ -586,11 +481,14 @@ impl BrainApplication {
             imp.restack.set(true);
             return;
         }
-        let Some(url) = self.embedding_url() else {
-            return; // semantic search is turned off
+        let (url, index, store) = {
+            let notebook = imp.notebook.borrow();
+            let Some(url) = notebook.embedding_url(crate::ui::DEFAULT_EMBEDDING_URL) else {
+                return; // semantic search is turned off
+            };
+            let (index, store) = notebook.catch_up_input();
+            (url, index, store)
         };
-        let index = imp.index.borrow().clone();
-        let store = imp.vectors.borrow().clone();
         imp.catching_up.set(true);
 
         glib::spawn_future_local(clone!(
@@ -612,60 +510,21 @@ impl BrainApplication {
                 // needs a dialog about: search carries on lexically and the
                 // next pass tries again.
                 if let Ok(Ok((store, report))) = outcome {
-                    app.absorb_vectors(store, report);
+                    app.imp().notebook.borrow_mut().absorb_vectors(store);
+                    // A pass that embedded something may have changed what a
+                    // search would return, and the palette is showing the
+                    // previous answer.
+                    if !report.is_quiet() {
+                        if let Some(window) = app.window() {
+                            window.refresh_palette();
+                        }
+                    }
                 }
                 if app.imp().restack.replace(false) {
                     app.schedule_catch_up();
                 }
             }
         ));
-    }
-
-    /// Take on the store a pass produced, and write it out.
-    fn absorb_vectors(&self, store: semantic::Store, report: semantic::Report) {
-        let imp = self.imp();
-        imp.vectors.replace(store);
-        if let Some(path) = imp.vectors_path.borrow().clone() {
-            // A cache that could not be written is not worth a word to the
-            // user: the vectors are in memory and work, and the next pass
-            // writes them again.
-            let _ = imp.vectors.borrow().save(&path);
-        }
-
-        // A pass that embedded something may have changed what a search would
-        // return, and the palette is showing the previous answer.
-        if !report.is_quiet() {
-            if let Some(window) = self.window() {
-                window.refresh_palette();
-            }
-        }
-    }
-
-    /// Where the embedding server is, or `None` when semantic search is off.
-    ///
-    /// Off is a configured empty string, not a missing key: a vault with no
-    /// server reachable behaves the same as one with the feature turned off,
-    /// and the difference is only whether Brain keeps trying.
-    fn embedding_url(&self) -> Option<String> {
-        let configured = self.imp().config.borrow().embedding_url.clone();
-        match configured {
-            Some(url) if url.trim().is_empty() => None,
-            Some(url) => Some(url),
-            None => Some(crate::ui::DEFAULT_EMBEDDING_URL.to_string()),
-        }
-    }
-
-    /// Point the vector store at a vault, reading whatever was cached for it.
-    fn load_vectors(&self) {
-        let imp = self.imp();
-        let Some(vault) = imp.vault.borrow().clone() else {
-            imp.vectors.replace(semantic::Store::default());
-            imp.vectors_path.replace(None);
-            return;
-        };
-        let path = semantic::default_store_path(vault.root());
-        imp.vectors.replace(semantic::Store::load(&path));
-        imp.vectors_path.replace(Some(path));
     }
 
     /// Embed a query so the semantic half of the next search can use it.
@@ -675,12 +534,16 @@ impl BrainApplication {
     /// it. Typing a longer query in the meantime is fine — the result is stored
     /// against the query it came from, and a stale one simply never matches.
     fn embed_query(&self, query: &str) {
-        let Some(url) = self.embedding_url() else {
-            return;
+        let url = {
+            let notebook = self.imp().notebook.borrow();
+            if !notebook.has_vectors() {
+                return; // nothing to compare a query against yet
+            }
+            match notebook.embedding_url(crate::ui::DEFAULT_EMBEDDING_URL) {
+                Some(url) => url,
+                None => return,
+            }
         };
-        if self.imp().vectors.borrow().is_empty() {
-            return; // nothing to compare a query against yet
-        }
         let query = query.to_string();
         glib::spawn_future_local(clone!(
             #[weak(rename_to = app)]
@@ -697,7 +560,10 @@ impl BrainApplication {
                 .await;
 
                 if let Ok(Ok(vector)) = outcome {
-                    app.imp().query_vector.replace(Some((wanted, vector)));
+                    app.imp()
+                        .notebook
+                        .borrow_mut()
+                        .set_query_vector(wanted, vector);
                     if let Some(window) = app.window() {
                         window.refresh_palette();
                     }
@@ -709,230 +575,106 @@ impl BrainApplication {
     /// The vectors as they stand, for tests and for callers that want to search
     /// the vault themselves.
     pub fn vectors(&self) -> semantic::Store {
-        self.imp().vectors.borrow().clone()
+        self.imp().notebook.borrow().vectors()
     }
 
-    /// The notes the sidebar is showing: every note, or the ones carrying the
-    /// active tag, or the ones matching the search — in path order so folders
-    /// group and nothing ever reshuffles, unless a search has ranked them.
+    // ---- what the sidebar shows ----
+
     pub fn listed_notes(&self) -> Vec<(NoteId, String)> {
-        if self.is_searching() {
-            return self.search_results();
-        }
-        let index = self.imp().index.borrow();
-        let mut notes: Vec<(NoteId, String)> = self
-            .tagged_ids()
-            .into_iter()
-            .map(|id| {
-                let excerpt = index.excerpt(&id).to_string();
-                (id, excerpt)
-            })
-            .collect();
-        notes.sort_by(|a, b| a.0.cmp(&b.0));
-        notes
+        self.imp().notebook.borrow().listed_notes()
     }
 
-    /// The ids the tag filter leaves, before any search.
-    fn tagged_ids(&self) -> Vec<NoteId> {
-        let index = self.imp().index.borrow();
-        match self.imp().filter.borrow().as_ref() {
-            Some(tag) => index.notes_tagged(tag),
-            None => index.ids().cloned().collect(),
-        }
-    }
-
-    /// Whether the sidebar is showing results rather than the tree.
     pub fn is_searching(&self) -> bool {
-        !self.imp().query.borrow().trim().is_empty()
+        self.imp().notebook.borrow().is_searching()
     }
 
-    /// What the sidebar search matched, best first.
-    ///
-    /// Titles before text, because someone typing into a list of notes is
-    /// usually reaching for one they can name. A note matched by both appears
-    /// once, at its title rank, with the matching line as its excerpt so the
-    /// row says *why* it is there.
     pub fn search_results(&self) -> Vec<(NoteId, String)> {
-        let imp = self.imp();
-        let query = imp.query.borrow().trim().to_string();
-        if query.is_empty() {
-            return Vec::new();
-        }
-        let index = imp.index.borrow();
-        let allowed: std::collections::BTreeSet<NoteId> = self.tagged_ids().into_iter().collect();
-
-        let mut out: Vec<(NoteId, String)> = Vec::new();
-        for matched in search::by_title(&index, &query, 50) {
-            if allowed.contains(&matched.id) {
-                out.push((matched.id.clone(), index.excerpt(&matched.id).to_string()));
-            }
-        }
-        for matched in search::by_text(&index, &query, 50) {
-            if !allowed.contains(&matched.id) || out.iter().any(|(id, _)| id == &matched.id) {
-                continue;
-            }
-            let excerpt = matched
-                .snippets
-                .first()
-                .map(|snippet| snippet.text.clone())
-                .unwrap_or_default();
-            out.push((matched.id.clone(), excerpt));
-        }
-        out
+        self.imp().notebook.borrow().search_results()
     }
 
-    /// The sidebar's tree, folders and all.
     pub fn sidebar_rows(&self) -> Vec<Row> {
-        let imp = self.imp();
-        let sort = imp.sort.get();
-        let vault = imp.vault.borrow().clone();
-        let index = imp.index.borrow();
-
-        let notes: Vec<Listed> = self
-            .tagged_ids()
-            .into_iter()
-            .map(|id| {
-                // Timestamps are read from disk only when something is going to
-                // sort by them. By name — the default — the sidebar refreshes
-                // on every save, and stat-ing the vault each time to sort by a
-                // field nobody asked for is work for nothing.
-                let (modified, created) = match (sort, &vault) {
-                    (Sort::Name, _) | (_, None) => (0, 0),
-                    (_, Some(vault)) => vault.times(&id),
-                };
-                Listed {
-                    excerpt: index.excerpt(&id).to_string(),
-                    id,
-                    modified,
-                    created,
-                }
-            })
-            .collect();
-
-        // A tag filter is a question about notes, not about folders. So the
-        // empty folders drop out of the tree while one is on rather than
-        // sitting there claiming to hold something, and every folder that does
-        // hold a match is opened — a filter whose results are behind a chevron
-        // is a filter that looks like it found nothing.
-        let filtered = imp.filter.borrow().is_some();
-        let folders = match (filtered, &vault) {
-            (false, Some(vault)) => vault.folders(),
-            _ => Vec::new(),
-        };
-        let expanded = if filtered {
-            notes
-                .iter()
-                .flat_map(|note| ancestors(note.id.folder().unwrap_or("")))
-                .collect()
-        } else {
-            imp.expanded.borrow().clone()
-        };
-        tree::rows(&notes, &folders, &expanded, sort)
+        self.imp().notebook.borrow().sidebar_rows()
     }
 
     /// Open or close a folder, and make it where the next new note goes.
     pub fn toggle_folder(&self, path: &str) {
-        let imp = self.imp();
-        {
-            let mut expanded = imp.expanded.borrow_mut();
-            if !expanded.remove(path) {
-                expanded.insert(path.to_string());
-            }
-        }
-        imp.target_folder.replace(Some(path.to_string()));
+        self.imp().notebook.borrow_mut().toggle_folder(path);
         self.refresh_notes();
-    }
-
-    /// Open every folder on the way to this one, so a note revealed by a
-    /// search or a link is visible in the tree behind it.
-    fn expand_to(&self, id: &NoteId) {
-        let Some(folder) = id.folder() else {
-            return;
-        };
-        let mut expanded = self.imp().expanded.borrow_mut();
-        let mut path = String::new();
-        for segment in folder.split('/') {
-            if !path.is_empty() {
-                path.push('/');
-            }
-            path.push_str(segment);
-            expanded.insert(path.clone());
-        }
     }
 
     pub fn sort(&self) -> Sort {
-        self.imp().sort.get()
+        self.imp().notebook.borrow().sort()
     }
 
     pub fn set_sort(&self, sort: Sort) {
-        self.imp().sort.set(sort);
+        self.imp().notebook.borrow_mut().set_sort(sort);
         self.refresh_notes();
-        if let Some(window) = self.window() {
-            window.select_note(self.imp().open.borrow().as_ref());
-        }
+        self.reselect();
     }
 
     /// Filter the sidebar by what was typed into its search entry.
     pub fn set_query(&self, query: &str) {
-        if self.imp().query.borrow().as_str() == query {
+        if !self.imp().notebook.borrow_mut().set_query(query) {
             return;
         }
-        self.imp().query.replace(query.to_string());
         self.refresh_notes();
-        if let Some(window) = self.window() {
-            window.select_note(self.imp().open.borrow().as_ref());
-        }
+        self.reselect();
     }
 
-    /// Every tag in the vault, with its note count.
     pub fn tags(&self) -> Vec<(String, usize)> {
-        self.imp().index.borrow().tags()
+        self.imp().notebook.borrow().tags()
     }
 
-    /// The notes linking to the open one, each with the line it was linked
-    /// from.
     pub fn backlinks_of_open_note(&self) -> Vec<(NoteId, String)> {
-        let imp = self.imp();
-        let Some(id) = imp.open.borrow().clone() else {
-            return Vec::new();
-        };
-        imp.index
-            .borrow()
-            .backlinks(&id)
-            .iter()
-            .map(|backlink| (backlink.from.clone(), backlink.context.clone()))
-            .collect()
+        self.imp().notebook.borrow().backlinks_of_open_note()
     }
 
     fn refresh_notes(&self) {
         let Some(window) = self.window() else {
             return;
         };
-        let filter = self.imp().filter.borrow().clone();
+        let (searching, results, rows, tags, filter) = {
+            let notebook = self.imp().notebook.borrow();
+            let searching = notebook.is_searching();
+            (
+                searching,
+                if searching {
+                    notebook.search_results()
+                } else {
+                    Vec::new()
+                },
+                if searching {
+                    Vec::new()
+                } else {
+                    notebook.sidebar_rows()
+                },
+                notebook.tags(),
+                notebook.active_tag(),
+            )
+        };
 
-        if self.is_searching() {
-            let results = self.search_results();
-            window.set_results(&results);
+        if searching {
             window.set_result_count(Some(results.len()));
+            window.set_results(&results);
         } else {
-            window.set_rows(&self.sidebar_rows());
+            window.set_rows(&rows);
             window.set_result_count(None);
         }
-        window.set_tags(&self.tags());
+        window.set_tags(&tags);
         window.set_active_tag(filter.as_deref());
     }
 
-    /// Show only notes carrying `tag`, or all of them.
-    ///
-    /// A tag that no longer exists — the last note carrying it was retagged —
-    /// clears the filter rather than showing an empty list with no way out.
-    pub fn filter_by_tag(&self, tag: Option<&str>) {
-        let wanted = tag.map(|tag| tag.trim_start_matches('#').to_lowercase());
-        let known = wanted
-            .as_ref()
-            .is_some_and(|tag| !self.imp().index.borrow().notes_tagged(tag).is_empty());
+    /// Put the highlight back on the open note after rebuilding the list.
+    fn reselect(&self) {
+        let open = self.imp().notebook.borrow().open_note_id();
+        if let Some(window) = self.window() {
+            window.select_note(open.as_ref());
+        }
+    }
 
-        self.imp().filter.replace(if known { wanted } else { None });
+    /// Show only notes carrying `tag`, or all of them.
+    pub fn filter_by_tag(&self, tag: Option<&str>) {
+        let known = self.imp().notebook.borrow_mut().filter_by_tag(tag);
         self.refresh_notes();
 
         if let (Some(window), Some(tag)) = (self.window(), tag) {
@@ -948,11 +690,11 @@ impl BrainApplication {
     // ---- the open note ----
 
     pub fn open_note_id(&self) -> Option<NoteId> {
-        self.imp().open.borrow().clone()
+        self.imp().notebook.borrow().open_note_id()
     }
 
     pub fn open_note(&self, id: &NoteId) {
-        if self.imp().open.borrow().as_ref() == Some(id) {
+        if self.imp().notebook.borrow().open_note_id().as_ref() == Some(id) {
             return;
         }
         // Switching notes flushes the one being left, rather than waiting for
@@ -963,30 +705,10 @@ impl BrainApplication {
     }
 
     fn load_note(&self, id: &NoteId) {
-        let imp = self.imp();
-        let Some(vault) = imp.vault.borrow().clone() else {
-            return;
-        };
-        match vault.read(id) {
-            Ok(note) => {
-                imp.on_disk.replace(Some(note.to_text()));
-                imp.open.replace(Some(id.clone()));
-                imp.buffer.replace(Some(note));
-                imp.config.borrow_mut().last_note = Some(id.as_str().to_string());
-                imp.target_folder
-                    .replace(Some(id.folder().unwrap_or("").to_string()));
-                // Opening a note the tree cannot show — from a link, a search
-                // result, or the last session — reveals it rather than leaving
-                // the highlight inside a folder that is shut.
-                self.expand_to(id);
-            }
-            Err(error) => {
-                if let Some(window) = self.window() {
-                    window.toast(&format!("Could not open {error}"));
-                }
-                imp.open.replace(None);
-                imp.buffer.replace(None);
-                imp.on_disk.replace(None);
+        let outcome = self.imp().notebook.borrow_mut().load_note(id);
+        if let Err(error) = outcome {
+            if let Some(window) = self.window() {
+                window.toast(&format!("Could not open {error}"));
             }
         }
         self.show_open_note();
@@ -996,42 +718,32 @@ impl BrainApplication {
         let Some(window) = self.window() else {
             return;
         };
-        let imp = self.imp();
-        let open = imp.open.borrow().clone();
-        let buffer = imp.buffer.borrow().clone();
+        let open = self.imp().notebook.borrow().open_note_text();
         self.refresh_backlinks();
-        match (open, buffer) {
-            // The editor holds the *file*, frontmatter included: the design
-            // styles that block in place, and a note whose metadata is only
-            // reachable through some other pane is a note with a hidden half.
-            // Round-tripping it costs nothing — an untouched block is written
-            // back byte for byte.
-            (Some(id), Some(note)) => window.show_note(Some((&id, &note.to_text()))),
-            _ => window.show_note(None),
+        match &open {
+            Some((id, text)) => window.show_note(Some((id, text))),
+            None => window.show_note(None),
         }
     }
 
     fn restore_last_note(&self) {
-        let last = self.imp().config.borrow().last_note.clone();
-        let Some(last) = last else {
-            return;
-        };
-        let id = NoteId::from_relative(last);
-        if self.imp().index.borrow().contains(&id) {
-            self.load_note(&id);
+        if self
+            .imp()
+            .notebook
+            .borrow_mut()
+            .restore_last_note()
+            .is_some()
+        {
+            self.show_open_note();
         }
     }
 
     /// The editor's text changed.
     pub fn note_edited(&self) {
-        self.imp().dirty.set(true);
+        self.imp().notebook.borrow_mut().mark_edited();
     }
 
     /// Copy the editor's text into the open note. Does not write to disk.
-    ///
-    /// Kept separate from [`Self::save_now`] because the two have different
-    /// callers: every save flushes first, but the window also flushes when it
-    /// is about to hand control somewhere the editor may go away.
     pub fn flush_open_note(&self) {
         let Some(window) = self.window() else {
             return;
@@ -1039,56 +751,31 @@ impl BrainApplication {
         let Some(body) = window.editor_body() else {
             return;
         };
-        let imp = self.imp();
-        let mut buffer = imp.buffer.borrow_mut();
-        let Some(note) = buffer.as_mut() else {
-            return;
-        };
-        // The editor holds the whole file, so the frontmatter is re-split out
-        // of it rather than carried alongside.
-        let edited = Note::from_text(note.id.clone(), &body);
-        if edited != *note {
-            *note = edited;
-            imp.dirty.set(true);
-        }
+        self.imp().notebook.borrow_mut().flush(&body);
     }
 
     /// Write the open note if it has unsaved changes.
     pub fn save_now(&self) {
-        let imp = self.imp();
-        if !imp.dirty.get() {
-            return;
-        }
-        let (Some(vault), Some(note)) = (imp.vault.borrow().clone(), imp.buffer.borrow().clone())
-        else {
-            imp.dirty.set(false);
-            return;
-        };
-
-        match vault.write(&note) {
-            Ok(()) => {
-                imp.dirty.set(false);
-                imp.on_disk.replace(Some(note.to_text()));
-                imp.index.borrow_mut().update(&note);
+        let outcome = self.imp().notebook.borrow_mut().save_now();
+        match outcome {
+            Saved::Clean => {}
+            Saved::Written => {
                 if let Some(window) = self.window() {
                     window.set_save_error(None);
                 }
                 // Rebuilding the list clears the highlight, so put it back.
                 self.refresh_notes();
                 self.refresh_backlinks();
+                self.reselect();
+            }
+            // Saving is broken. Say so; the note stays dirty so the next tick
+            // tries again — a note that failed to save must not be quietly
+            // forgotten.
+            Saved::Failed(error) => {
                 if let Some(window) = self.window() {
-                    window.select_note(imp.open.borrow().as_ref());
+                    window.set_save_error(Some(&format!("Not saving: {error}")));
                 }
             }
-            Err(error) => self.report_save_failure(&error),
-        }
-    }
-
-    /// Saving is broken. Say so and leave the note dirty so the next tick tries
-    /// again — a note that failed to save must not be quietly forgotten.
-    fn report_save_failure(&self, error: &VaultError) {
-        if let Some(window) = self.window() {
-            window.set_save_error(Some(&format!("Not saving: {error}")));
         }
     }
 
@@ -1114,14 +801,7 @@ impl BrainApplication {
 
     /// Candidates for a `[[` completion, by title, alias and path.
     pub fn link_candidates(&self, query: &str) -> Vec<String> {
-        let index = self.imp().index.borrow();
-        let open = self.imp().open.borrow().clone();
-        search::by_title(&index, query, 16)
-            .into_iter()
-            // Linking a note to itself is never what was meant.
-            .filter(|matched| Some(&matched.id) != open.as_ref())
-            .map(|matched| matched.id.title().to_string())
-            .collect()
+        self.imp().notebook.borrow().link_candidates(query)
     }
 
     /// Follow a `[[link]]`.
@@ -1129,8 +809,8 @@ impl BrainApplication {
     /// A target with nothing behind it is offered as a note to write, because
     /// writing the link before the note is the normal order of things.
     pub fn follow_link(&self, target: &str) {
-        let open = self.imp().open.borrow().clone();
-        let resolution = self.imp().index.borrow().resolve(target, open.as_ref());
+        use crate::model::index::Resolution;
+        let resolution = self.imp().notebook.borrow().resolve_link(target);
         match resolution {
             Resolution::Note(id) => self.open_note(&id),
             Resolution::Missing => self.offer_to_create(target),
@@ -1173,103 +853,59 @@ impl BrainApplication {
         let Some(window) = self.window() else {
             return;
         };
-        window.set_backlinks(&self.backlinks_of_open_note());
-
-        let imp = self.imp();
-        let open = imp.open.borrow().clone();
-        let note = imp.buffer.borrow().clone();
-        let (tags, words, created, updated) = match &note {
-            Some(note) => (
-                note.tags(),
-                note.body.split_whitespace().count(),
-                note.frontmatter
-                    .as_ref()
-                    .and_then(|f| f.created)
-                    .map(|date| date.to_string()),
-                note.frontmatter
-                    .as_ref()
-                    .and_then(|f| f.updated)
-                    .map(|date| date.to_string()),
-            ),
-            None => (Vec::new(), 0, None, None),
+        let (backlinks, open, details) = {
+            let notebook = self.imp().notebook.borrow();
+            let details = notebook.open_note().map(|note| {
+                (
+                    note.tags(),
+                    note.body.split_whitespace().count(),
+                    note.frontmatter
+                        .as_ref()
+                        .and_then(|f| f.created)
+                        .map(|date| date.to_string()),
+                    note.frontmatter
+                        .as_ref()
+                        .and_then(|f| f.updated)
+                        .map(|date| date.to_string()),
+                )
+            });
+            (
+                notebook.backlinks_of_open_note(),
+                notebook.open_note_id(),
+                details,
+            )
         };
+        window.set_backlinks(&backlinks);
+
+        let (tags, words, created, updated) = details.unwrap_or_default();
         window.set_details(open.as_ref(), &tags, words, created, updated);
     }
 
     /// Answer a palette query.
-    pub fn search(&self, query: &str, mode: crate::ui::Mode) -> Vec<crate::ui::Hit> {
-        let index = self.imp().index.borrow();
-        match mode {
-            crate::ui::Mode::Title => search::by_title(&index, query, 30)
-                .into_iter()
-                .map(|matched| crate::ui::Hit {
-                    id: matched.id.as_str().to_string(),
-                    title: matched.id.title().to_string(),
-                    // The folder, since two notes can share a title and the
-                    // path is the only thing telling them apart.
-                    detail: matched.id.folder().unwrap_or("").to_string(),
-                    highlight: None,
-                })
-                .collect(),
-            // Hybrid: BM25 over the words, vectors over the meaning, fused.
-            // The vector half is whatever is already known about this query —
-            // on the first keystroke that is nothing, so the first answer is
-            // lexical and the fused one replaces it a moment later.
-            crate::ui::Mode::Text => {
-                let lexical = self.imp().lexical.borrow();
-                let vectors = self.imp().vectors.borrow();
-                let embedded = self.imp().query_vector.borrow();
-                let semantic = embedded
-                    .as_ref()
-                    .filter(|(embedded, _)| embedded == query)
-                    .map(|(_, vector)| (&*vectors, vector.as_slice()));
-                if semantic.is_none() {
-                    self.embed_query(query);
-                }
-
-                search::hybrid(&index, &lexical, semantic, query, 30)
-                    .into_iter()
-                    .map(|hit| crate::ui::Hit {
-                        id: hit.id.as_str().to_string(),
-                        title: hit.id.title().to_string(),
-                        // Underlined where the words are, and not underlined at
-                        // all when the vectors found it and the words are not
-                        // there — which is the honest rendering of a hit that
-                        // matched on meaning.
-                        highlight: search::highlight_of(&hit.snippet, query),
-                        detail: hit.snippet,
-                    })
-                    .collect()
-            }
+    pub fn search(&self, query: &str, mode: Mode) -> Vec<Hit> {
+        let (hits, wants_embedding) = self.imp().notebook.borrow().search(query, mode);
+        if wants_embedding && mode == Mode::Text {
+            self.embed_query(query);
         }
+        hits
     }
 
     // ---- attachments ----
 
     /// Copy dropped files into the vault and embed them.
     pub fn attach_files(&self, paths: &[String]) {
-        let Some(vault) = self.imp().vault.borrow().clone() else {
-            return;
-        };
         let Some(window) = self.window() else {
             return;
         };
+        let attached = self.imp().notebook.borrow_mut().attach_files(paths);
 
-        let mut names = Vec::new();
-        let mut failures = 0usize;
-        for path in paths {
-            match vault.add_attachment(Path::new(path)) {
-                Ok(name) => names.push(name),
-                Err(_) => failures += 1,
-            }
-        }
-
-        if !names.is_empty() {
-            window.insert_embeds(&names);
+        if !attached.names.is_empty() {
+            window.insert_embeds(&attached.names);
             // The embed only points at a file; the save tick writes the note.
             self.flush_open_note();
         }
-        if failures > 0 {
+        if attached.failures > 0 {
+            let failures = attached.failures;
             window.toast(&format!(
                 "Could not copy {failures} file{}",
                 if failures == 1 { "" } else { "s" }
@@ -1302,189 +938,72 @@ impl BrainApplication {
         let Some(window) = self.window() else {
             return;
         };
-        let Some(vault) = self.imp().vault.borrow().clone() else {
-            return;
-        };
-
-        let referenced = self.imp().index.borrow().referenced_attachments();
-        let directory = vault.root().join(crate::model::vault::ATTACHMENTS_DIR);
-        let mut unused: Vec<String> = std::fs::read_dir(&directory)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
-            .map(|entry| entry.file_name().to_string_lossy().to_string())
-            .filter(|name| !name.starts_with('.') && !referenced.contains(name))
-            .collect();
-        unused.sort();
-
+        let unused = self.imp().notebook.borrow().unused_attachments();
         window.show_unused_attachments(&unused);
     }
 
     // ---- creating, renaming, deleting ----
 
     pub fn create_note(&self, title: &str) {
-        self.create_note_in(&self.current_folder(), title);
-    }
-
-    /// Where a new note or folder goes: whichever folder was last chosen in the
-    /// sidebar, and otherwise beside the open note, so working inside a folder
-    /// keeps you there.
-    fn current_folder(&self) -> String {
-        let imp = self.imp();
-        let target = imp.target_folder.borrow().clone();
-        target
-            .or_else(|| {
-                imp.open
-                    .borrow()
-                    .as_ref()
-                    .and_then(|id| id.folder().map(str::to_string))
-            })
-            .unwrap_or_default()
+        let folder = self.imp().notebook.borrow().current_folder();
+        self.create_note_in(&folder, title);
     }
 
     /// Write a new note in a named folder.
     pub fn create_note_in(&self, folder: &str, title: &str) {
-        let imp = self.imp();
-        let Some(vault) = imp.vault.borrow().clone() else {
-            return;
-        };
         self.flush_open_note();
         self.save_now();
 
-        let id = self.unique_id(&vault, Some(folder), title);
-
-        match vault.create(&id, "") {
-            Ok(note) => {
-                imp.index.borrow_mut().update(&note);
+        let outcome = self
+            .imp()
+            .notebook
+            .borrow_mut()
+            .create_note_in(folder, title);
+        match outcome {
+            Ok(_) => {
                 self.refresh_notes();
-                self.load_note(&id);
+                self.show_open_note();
             }
-            Err(error) => {
+            Err(Failed::NoVault) => {}
+            Err(error) => self.complain(&format!("Could not create the note: {error}")),
+        }
+    }
+
+    /// Rename the open note and repoint every link that pointed at it.
+    pub fn rename_note(&self, title: &str) {
+        self.flush_open_note();
+        self.save_now();
+
+        let outcome = self.imp().notebook.borrow_mut().rename_note(title);
+        match outcome {
+            Renamed::Unchanged => {}
+            Renamed::Failed(error) => self.complain(&format!("Could not rename: {error}")),
+            Renamed::Done { links, .. } => {
+                self.refresh_notes();
+                self.show_open_note();
                 if let Some(window) = self.window() {
-                    window.toast(&format!("Could not create the note: {error}"));
+                    match links {
+                        0 => window.toast("Renamed"),
+                        1 => window.toast("Renamed, and updated 1 link"),
+                        count => window.toast(&format!("Renamed, and updated {count} links")),
+                    }
                 }
             }
         }
     }
 
-    /// A free id for `title`, suffixed if that name is taken.
-    fn unique_id(&self, vault: &Vault, folder: Option<&str>, title: &str) -> NoteId {
-        let build = |name: &str| match folder {
-            Some(folder) if !folder.is_empty() => {
-                NoteId::from_relative(format!("{folder}/{name}.md"))
-            }
-            _ => NoteId::from_relative(format!("{name}.md")),
-        };
-        let mut id = build(title);
-        let mut attempt = 2;
-        while vault.path_of(&id).exists() {
-            id = build(&format!("{title} {attempt}"));
-            attempt += 1;
-        }
-        id
-    }
-
-    /// Rename the open note and repoint every link that pointed at it.
-    pub fn rename_note(&self, title: &str) {
-        let imp = self.imp();
-        let Some(vault) = imp.vault.borrow().clone() else {
-            return;
-        };
-        let Some(from) = imp.open.borrow().clone() else {
-            return;
-        };
-        if from.title() == title {
-            return;
-        }
-
-        self.flush_open_note();
-        self.save_now();
-
-        let to = match from.folder() {
-            Some(folder) => NoteId::from_relative(format!("{folder}/{title}.md")),
-            None => NoteId::from_relative(format!("{title}.md")),
-        };
-
-        // Every note pointing here has to be rewritten, so gather them before
-        // the rename makes the index forget who they were.
-        let inbound: Vec<NoteId> = imp
-            .index
-            .borrow()
-            .backlinks(&from)
-            .iter()
-            .map(|backlink| backlink.from.clone())
-            .collect();
-
-        if let Err(error) = vault.rename(&from, &to) {
-            if let Some(window) = self.window() {
-                window.toast(&format!("Could not rename: {error}"));
-            }
-            return;
-        }
-        imp.index.borrow_mut().rename(&from, &to);
-
-        let mut rewritten = 0usize;
-        for id in inbound {
-            let Ok(mut note) = vault.read(&id) else {
-                continue;
-            };
-            let Some(body) = markdown::rewrite_target(&note.body, from.title(), to.title()) else {
-                continue;
-            };
-            note.body = body;
-            if vault.write(&note).is_ok() {
-                imp.index.borrow_mut().update(&note);
-                rewritten += 1;
-            }
-        }
-
-        imp.open.replace(Some(to.clone()));
-        if let Some(note) = imp.buffer.borrow_mut().as_mut() {
-            note.id = to.clone();
-        }
-        imp.config.borrow_mut().last_note = Some(to.as_str().to_string());
-
-        self.refresh_notes();
-        self.show_open_note();
-
-        if let Some(window) = self.window() {
-            match rewritten {
-                0 => window.toast("Renamed"),
-                1 => window.toast("Renamed, and updated 1 link"),
-                count => window.toast(&format!("Renamed, and updated {count} links")),
-            }
-        }
-    }
-
     pub fn delete_open_note(&self) {
-        let imp = self.imp();
-        let Some(vault) = imp.vault.borrow().clone() else {
-            return;
-        };
-        let Some(id) = imp.open.borrow().clone() else {
-            return;
-        };
-
-        // Drop the pending write first, or the tick recreates the file.
-        imp.dirty.set(false);
-        imp.buffer.replace(None);
-        imp.on_disk.replace(None);
-        imp.open.replace(None);
-
-        if let Err(error) = vault.delete(&id) {
-            if let Some(window) = self.window() {
-                window.toast(&format!("Could not delete: {error}"));
+        let outcome = self.imp().notebook.borrow_mut().delete_open_note();
+        match outcome {
+            Err(Failed::NoVault) => {}
+            Err(error) => self.complain(&format!("Could not delete: {error}")),
+            Ok(id) => {
+                self.refresh_notes();
+                self.show_open_note();
+                if let Some(window) = self.window() {
+                    window.toast(&format!("Deleted “{}”", id.title()));
+                }
             }
-            return;
-        }
-        imp.index.borrow_mut().remove(&id);
-        imp.config.borrow_mut().last_note = None;
-
-        self.refresh_notes();
-        self.show_open_note();
-        if let Some(window) = self.window() {
-            window.toast(&format!("Deleted “{}”", id.title()));
         }
     }
 
@@ -1492,62 +1011,51 @@ impl BrainApplication {
 
     /// The folders in the vault, for the dialogs that ask which one.
     pub fn folders(&self) -> Vec<String> {
-        self.imp()
-            .vault
-            .borrow()
-            .as_ref()
-            .map(Vault::folders)
-            .unwrap_or_default()
+        self.imp().notebook.borrow().folders()
     }
 
     /// Make a folder where a new note would go.
     pub fn create_folder_here(&self, name: &str) {
-        self.create_folder(&self.current_folder(), name);
+        let parent = self.imp().notebook.borrow().current_folder();
+        self.create_folder(&parent, name);
     }
 
     pub fn create_folder(&self, parent: &str, name: &str) {
-        let Some(vault) = self.imp().vault.borrow().clone() else {
-            return;
-        };
-        let path = join(parent, name);
-        match vault.create_folder(&path) {
-            Ok(()) => {
-                // Opened, and opened all the way down to it: a folder made and
-                // then not shown is a folder you go looking for in Files.
-                let mut expanded = self.imp().expanded.borrow_mut();
-                for ancestor in ancestors(&path) {
-                    expanded.insert(ancestor);
-                }
-                drop(expanded);
-                self.imp().target_folder.replace(Some(path));
-                self.refresh_notes();
-            }
+        let outcome = self.imp().notebook.borrow_mut().create_folder(parent, name);
+        match outcome {
+            Ok(_) => self.refresh_notes(),
+            Err(Failed::NoVault) => {}
             Err(error) => self.complain(&format!("Could not create the folder: {error}")),
         }
     }
 
     /// Rename a folder in place, keeping everything under it.
     pub fn rename_folder(&self, path: &str, name: &str) {
+        self.flush_open_note();
+        self.save_now();
+        let outcome = self.imp().notebook.borrow_mut().rename_folder(path, name);
         let parent = path
             .rsplit_once('/')
             .map(|(parent, _)| parent)
             .unwrap_or("");
-        self.relocate_folder(path, &join(parent, name), "Renamed");
+        let to = if parent.is_empty() {
+            name.to_string()
+        } else {
+            format!("{parent}/{name}")
+        };
+        self.report_relocation(outcome, &to, "Renamed");
     }
 
     pub fn delete_folder(&self, path: &str) {
-        let Some(vault) = self.imp().vault.borrow().clone() else {
-            return;
-        };
-        match vault.delete_folder(path) {
+        let outcome = self.imp().notebook.borrow_mut().delete_folder(path);
+        match outcome {
             Ok(()) => {
-                self.imp().expanded.borrow_mut().remove(path);
-                self.forget_target(path);
                 self.refresh_notes();
                 if let Some(window) = self.window() {
                     window.toast(&format!("Deleted “{path}”"));
                 }
             }
+            Err(Failed::NoVault) => {}
             Err(error) => self.complain(&format!("Could not delete the folder: {error}")),
         }
     }
@@ -1558,7 +1066,15 @@ impl BrainApplication {
             Some(Dragged::Note(id)) => self.move_note(&id, destination),
             Some(Dragged::Folder(path)) => {
                 let name = path.rsplit('/').next().unwrap_or(&path).to_string();
-                self.relocate_folder(&path, &join(destination, &name), "Moved");
+                let to = if destination.is_empty() {
+                    name
+                } else {
+                    format!("{destination}/{name}")
+                };
+                self.flush_open_note();
+                self.save_now();
+                let outcome = self.imp().notebook.borrow_mut().relocate_folder(&path, &to);
+                self.report_relocation(outcome, &to, "Moved");
             }
             // Something dragged in from another app. Notes are files, so this
             // could one day mean "import", but silently doing nothing is
@@ -1567,132 +1083,47 @@ impl BrainApplication {
         }
     }
 
-    /// Move one note into a folder, keeping its title.
-    ///
-    /// Inbound links are left alone deliberately: they resolve by title, and
-    /// the title has not changed. A move is the one rearrangement of the vault
-    /// that costs nothing anywhere else — which is the point of folders being
-    /// organisational rather than namespaces.
-    pub fn move_note(&self, id: &NoteId, destination: &str) {
-        let imp = self.imp();
-        let Some(vault) = imp.vault.borrow().clone() else {
-            return;
-        };
-        if id.folder().unwrap_or("") == destination {
-            return;
+    /// The tail of a folder move or rename: the notebook has already rebuilt
+    /// its index, so this is redraw and wording only.
+    fn report_relocation(&self, outcome: Result<(), Failed>, to: &str, verb: &str) {
+        match outcome {
+            Ok(()) => {
+                self.schedule_catch_up();
+                self.refresh_notes();
+                self.show_open_note();
+                self.reselect();
+                if let Some(window) = self.window() {
+                    window.toast(&format!("{verb} “{to}”"));
+                }
+            }
+            Err(Failed::NoVault) => {}
+            Err(error) => self.complain(&format!("Could not move the folder: {error}")),
         }
-        let to = NoteId::from_relative(join(destination, &format!("{}.md", id.title())));
+    }
 
+    /// Move one note into a folder, keeping its title.
+    pub fn move_note(&self, id: &NoteId, destination: &str) {
         // The note may be the open one with unsaved edits, and the file is
         // about to move out from under the save tick.
-        let open = imp.open.borrow().clone();
-        if open.as_ref() == Some(id) {
+        if self.imp().notebook.borrow().open_note_id().as_ref() == Some(id) {
             self.flush_open_note();
             self.save_now();
         }
 
-        if let Err(error) = vault.rename(id, &to) {
-            self.complain(&format!("Could not move: {error}"));
-            return;
-        }
-        imp.index.borrow_mut().rename(id, &to);
-
-        if open.as_ref() == Some(id) {
-            imp.open.replace(Some(to.clone()));
-            if let Some(note) = imp.buffer.borrow_mut().as_mut() {
-                note.id = to.clone();
+        let outcome = self.imp().notebook.borrow_mut().move_note(id, destination);
+        match outcome {
+            Moved::Unchanged => {}
+            Moved::Failed(error) => self.complain(&format!("Could not move: {error}")),
+            Moved::Done { to, destination } => {
+                self.refresh_notes();
+                self.show_open_note();
+                if let Some(window) = self.window() {
+                    window.toast(&match destination.as_str() {
+                        "" => format!("Moved “{}” to the vault root", to.title()),
+                        folder => format!("Moved “{}” to {folder}", to.title()),
+                    });
+                }
             }
-            imp.config.borrow_mut().last_note = Some(to.as_str().to_string());
-        }
-        self.expand_to(&to);
-        self.refresh_notes();
-        self.show_open_note();
-        if let Some(window) = self.window() {
-            window.toast(&match destination {
-                "" => format!("Moved “{}” to the vault root", to.title()),
-                folder => format!("Moved “{}” to {folder}", to.title()),
-            });
-        }
-    }
-
-    /// Move or rename a folder, and take the app's own state with it.
-    ///
-    /// The index is rebuilt rather than patched: every note under the folder
-    /// changes id at once, and walking a subtree of the index to rewrite ids
-    /// is exactly the kind of bookkeeping a rescan does correctly for free.
-    fn relocate_folder(&self, from: &str, to: &str, verb: &str) {
-        let imp = self.imp();
-        let Some(vault) = imp.vault.borrow().clone() else {
-            return;
-        };
-        if from == to {
-            return;
-        }
-        self.flush_open_note();
-        self.save_now();
-
-        if let Err(error) = vault.move_folder(from, to) {
-            self.complain(&format!("Could not move the folder: {error}"));
-            return;
-        }
-
-        // Anything that named a path under the old folder now names nothing.
-        let moved = |path: &str| -> Option<String> {
-            if path == from {
-                Some(to.to_string())
-            } else {
-                path.strip_prefix(&format!("{from}/"))
-                    .map(|rest| format!("{to}/{rest}"))
-            }
-        };
-        let expanded: std::collections::BTreeSet<String> = imp
-            .expanded
-            .borrow()
-            .iter()
-            .map(|path| moved(path).unwrap_or_else(|| path.clone()))
-            .collect();
-        imp.expanded.replace(expanded);
-        for ancestor in ancestors(to) {
-            imp.expanded.borrow_mut().insert(ancestor);
-        }
-        // Taken out of the RefCell before the `if let`, not inside its
-        // scrutinee: the borrow there lives for the whole body and the
-        // `replace` would panic on it.
-        let target = imp.target_folder.borrow().clone();
-        if let Some(target) = target {
-            imp.target_folder
-                .replace(Some(moved(&target).unwrap_or(target)));
-        }
-
-        let reopen = imp
-            .open
-            .borrow()
-            .clone()
-            .and_then(|id| moved(id.as_str()).map(NoteId::from_relative));
-
-        self.rescan();
-        if let Some(id) = reopen {
-            imp.open.replace(Some(id.clone()));
-            imp.config.borrow_mut().last_note = Some(id.as_str().to_string());
-            self.load_note(&id);
-        }
-        self.refresh_notes();
-        if let Some(window) = self.window() {
-            window.select_note(imp.open.borrow().as_ref());
-            window.toast(&format!("{verb} “{to}”"));
-        }
-    }
-
-    /// Drop a remembered target folder that has just stopped existing.
-    fn forget_target(&self, path: &str) {
-        let imp = self.imp();
-        let stale = imp
-            .target_folder
-            .borrow()
-            .as_deref()
-            .is_some_and(|target| tree::is_within(path, target));
-        if stale {
-            imp.target_folder.replace(None);
         }
     }
 
@@ -1701,28 +1132,4 @@ impl BrainApplication {
             window.toast(message);
         }
     }
-}
-
-/// `parent` and `name` as one vault-relative path. An empty parent is the
-/// vault root, where a leading `/` would name something outside it.
-fn join(parent: &str, name: &str) -> String {
-    if parent.is_empty() {
-        name.to_string()
-    } else {
-        format!("{parent}/{name}")
-    }
-}
-
-/// `a/b/c` yields `a`, `a/b`, `a/b/c`.
-fn ancestors(path: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-    for segment in path.split('/').filter(|segment| !segment.is_empty()) {
-        if !current.is_empty() {
-            current.push('/');
-        }
-        current.push_str(segment);
-        out.push(current.clone());
-    }
-    out
 }

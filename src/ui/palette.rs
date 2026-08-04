@@ -16,35 +16,18 @@ use adw::subclass::prelude::*;
 use gtk::glib::subclass::Signal;
 use gtk::glib::{self, clone};
 
-/// What a query is matched against.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Mode {
-    /// Titles, aliases and paths, fuzzily.
-    #[default]
-    Title,
-    /// The text of every note.
-    Text,
-}
+// `Mode` and `Hit` are the notebook's — what a query is matched against and
+// what came back are the same questions on any platform, so they live beside
+// the search that answers them rather than beside the dialog that draws it.
+use crate::model::notebook::{Hit, Mode};
 
-impl Mode {
-    fn placeholder(self) -> &'static str {
-        match self {
-            Self::Title => "Go to note…",
-            Self::Text => "Search all notes…",
-        }
+/// What the entry says before anything is typed. A free function rather than a
+/// method, because the wording is this shell's and the type is not.
+fn placeholder(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Title => "Go to note…",
+        Mode::Text => "Search all notes…",
     }
-}
-
-/// One row: a note, what to say about it, and which part of that to highlight.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Hit {
-    /// The note's id, reported verbatim when the row is chosen.
-    pub id: String,
-    pub title: String,
-    /// The folder, or the matching line in text mode.
-    pub detail: String,
-    /// Character range within `detail` to mark, if any.
-    pub highlight: Option<(usize, usize)>,
 }
 
 /// Rows shown at once. Past this the list stops being scannable and the ranking
@@ -128,7 +111,7 @@ impl Palette {
         self.set_title("Search");
 
         let entry = gtk::SearchEntry::builder()
-            .placeholder_text(Mode::Title.placeholder())
+            .placeholder_text(placeholder(Mode::Title))
             .hexpand(true)
             .build();
 
@@ -218,7 +201,7 @@ impl Palette {
                 };
                 palette.imp().mode.set(mode);
                 if let Some(entry) = palette.imp().entry.borrow().as_ref() {
-                    entry.set_placeholder_text(Some(mode.placeholder()));
+                    entry.set_placeholder_text(Some(placeholder(mode)));
                 }
                 palette.query_changed();
             }
@@ -287,7 +270,7 @@ impl Palette {
         imp.switching.set(false);
 
         if let Some(entry) = imp.entry.borrow().as_ref() {
-            entry.set_placeholder_text(Some(mode.placeholder()));
+            entry.set_placeholder_text(Some(placeholder(mode)));
             entry.select_region(0, -1);
         }
 

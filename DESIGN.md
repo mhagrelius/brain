@@ -591,6 +591,31 @@ Where the finished thing differs from this document, this is what happened.
   `ui/embedder.rs` stayed in the shell as libsoup's implementation of the
   `semantic::Embedder` trait rather than moving down with the rest. See
   `PLAN.md` for what the split is for.
+- **The application became a `Notebook` with a GTK shell around it.** "The
+  application owns the vault and is the only mutator" survives word for word;
+  what changed is that the object holding that rule is a plain struct in
+  `core/src/notebook.rs` rather than a `glib::wrapper!`. `BrainApplication` is
+  now the parts that genuinely need a toolkit — actions, the save tick, the
+  file monitors, the worker threads — plus the translation from an outcome to
+  a toast. It went from 1,728 lines to about 800.
+
+  The design of the seam is that **a notebook method reports what happened to
+  the vault, not what to put on screen**: `Renamed::Done { links }` says two
+  links were rewritten and says nothing about the sentence describing them.
+  Wording is the shell's, and a shell on another platform will word it
+  differently; what both must agree on is what happened.
+
+  The immediate payoff was not portability but tests. 24 scenarios that were
+  previously reachable only through the GTK harness — the external-change
+  cases especially, which are the hardest to stage through a widget — are now
+  plain `#[test]`s in `core/tests/notebook.rs`, with no `Xvfb`, no thread
+  affinity, and no shared `STEPS` vault for a case to queue behind. That was
+  the argument for pushing rules into `model/` all along, applied one level
+  further up than it had been.
+
+  `Hit` and `Mode` moved with it. What a query is matched against and what came
+  back are the same questions on any platform, so they sit beside the search
+  that answers them; `ui/palette.rs` keeps only the placeholder wording.
 
 ## Settled
 
