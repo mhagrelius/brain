@@ -41,7 +41,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::note::NoteId;
+use crate::note::{Note, NoteId};
+use crate::vault::Vault;
 
 /// A fingerprint of a note's bytes.
 ///
@@ -218,6 +219,65 @@ pub fn plan(base: &Snapshot, local: &Snapshot, remote: &Snapshot, from: &str, da
     plan
 }
 
+/// Why a pass could not finish. One string, like [`crate::semantic::EmbedError`]
+/// and for the same reason: every caller's recovery is to leave the vault alone
+/// and try again, so a taxonomy would only give them something to ignore.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncError(pub String);
+
+impl std::fmt::Display for SyncError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// What a write to the server did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Put {
+    Done(Hash),
+    /// The server moved on since the base this was sent with. Carries what it
+    /// actually holds, which is what turns a refusal into a plannable conflict
+    /// rather than a loop.
+    Stale(Option<Hash>),
+    Failed(String),
+}
+
+/// The other side of the vault, over whatever the shell speaks.
+///
+/// The same arrangement as [`crate::semantic::Embedder`]: synchronous, because
+/// the caller is already on a worker thread, and a trait so the whole of the
+/// pass below can be tested against a map instead of a network.
+pub trait Remote {
+    fn list(&self) -> Result<Snapshot, SyncError>;
+    /// The text of each id the server still has. Missing ones are absent.
+    fn get(&self, ids: &[NoteId]) -> Result<Vec<(NoteId, String)>, SyncError>;
+    fn put(&self, id: &NoteId, text: &str, base: Option<Hash>) -> Put;
+    fn delete(&self, id: &NoteId, base: Option<Hash>) -> Put;
+}
+
+/// What one pass did, for the banner and for the tests.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Report {
+    pub pushed: usize,
+    pub pulled: usize,
+    pub deleted_here: usize,
+    pub deleted_there: usize,
+    pub renamed: usize,
+    /// Notes that ended up with a copy beside them. The number the banner says.
+    pub conflicted: usize,
+    /// Transfers that did not happen. Not an error — the next pass retries,
+    /// and the base was not advanced for them, so nothing is forgotten.
+    pub failed: usize,
+}
+
+impl Report {
+    /// Whether anything happened. A quiet vault reports nothing at all, which
+    /// is what makes it safe to run after every rescan.
+    pub fn is_quiet(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Notes that are gone from `after` but whose content turned up under a new id.
 fn renames(base: &Snapshot, after: &Snapshot) -> Vec<(NoteId, NoteId)> {
     // Ids that are new in `after`, indexed by content, so a vanished note can
@@ -248,6 +308,178 @@ fn renames(base: &Snapshot, after: &Snapshot) -> Vec<(NoteId, NoteId)> {
         }
     }
     found
+}
+
+/// Take a snapshot of what is on disk right now.
+pub fn snapshot_of(vault: &Vault) -> Snapshot {
+    let (notes, _problems) = vault.scan();
+    notes
+        .into_iter()
+        .map(|note| (note.id.clone(), Hash::of(&note.to_text())))
+        .collect()
+}
+
+/// Run one pass: plan it, apply it, and return the base for the next one.
+///
+/// **The base returned is what actually happened, not what was planned.** Every
+/// transfer that failed is left out of it, so the next pass sees that note as
+/// still needing work — a pass that dies half way through leaves the vault
+/// behind rather than wrong, which is the promise the embedding catch-up makes
+/// too.
+///
+/// The order is renames, then pulls, then pushes, then deletions. Renames go
+/// first because everything after them refers to notes by their new ids;
+/// deletions go last because a deletion is the only step that cannot be undone
+/// by the next pass, and doing it after everything else means a failure
+/// earlier leaves the note in place rather than gone.
+pub fn run(
+    vault: &Vault,
+    base: &Snapshot,
+    remote: &dyn Remote,
+    from: &str,
+    date: &str,
+) -> Result<(Snapshot, Report), SyncError> {
+    let local = snapshot_of(vault);
+    let there = remote.list()?;
+    let plan = plan(base, &local, &there, from, date);
+
+    let mut agreed = base.clone();
+    let mut report = Report::default();
+
+    for (old, new) in &plan.rename_local {
+        match vault.rename(old, new) {
+            Ok(()) => {
+                let hash = local.get(old).copied();
+                agreed.remove(old);
+                if let Some(hash) = hash {
+                    agreed.insert(new.clone(), hash);
+                }
+                report.renamed += 1;
+            }
+            Err(_) => report.failed += 1,
+        }
+    }
+
+    // Conflicts are pulled like anything else, but into a note beside the
+    // original rather than over it. The local version is never touched.
+    let pulling: Vec<NoteId> = plan
+        .pull
+        .iter()
+        .cloned()
+        .chain(plan.conflicts.iter().map(|conflict| conflict.id.clone()))
+        .collect();
+    let fetched = remote.get(&pulling)?;
+    let landing: BTreeMap<&NoteId, &NoteId> = plan
+        .conflicts
+        .iter()
+        .map(|conflict| (&conflict.id, &conflict.copy))
+        .collect();
+
+    for (id, text) in &fetched {
+        let conflicted = landing.get(id).copied();
+        let target = conflicted.unwrap_or(id);
+        if write_text(vault, target, text).is_err() {
+            report.failed += 1;
+            continue;
+        }
+        match conflicted {
+            // The copy is a new note of its own. The original is still what it
+            // was here, so the base for it stays where it was — the next pass
+            // will see both sides changed again and, because the texts now
+            // differ from the base in the same way, plan the push.
+            Some(_) => report.conflicted += 1,
+            None => {
+                agreed.insert(id.clone(), Hash::of(text));
+                report.pulled += 1;
+            }
+        }
+    }
+
+    for id in &plan.push {
+        let Some(text) = read_text(vault, id) else {
+            report.failed += 1;
+            continue;
+        };
+        match remote.put(id, &text, base.get(id).copied()) {
+            Put::Done(hash) => {
+                agreed.insert(id.clone(), hash);
+                report.pushed += 1;
+            }
+            // Somebody wrote between the listing and this. Not an error and
+            // not a conflict yet — the next pass lists again and sees it.
+            Put::Stale(_) | Put::Failed(_) => report.failed += 1,
+        }
+    }
+
+    for id in &plan.delete_local {
+        match vault.delete(id) {
+            Ok(()) => {
+                agreed.remove(id);
+                report.deleted_here += 1;
+            }
+            Err(_) => report.failed += 1,
+        }
+    }
+
+    for id in &plan.delete_remote {
+        match remote.delete(id, base.get(id).copied()) {
+            Put::Done(_) => {
+                agreed.remove(id);
+                report.deleted_there += 1;
+            }
+            Put::Stale(_) | Put::Failed(_) => report.failed += 1,
+        }
+    }
+
+    Ok((agreed, report))
+}
+
+fn read_text(vault: &Vault, id: &NoteId) -> Option<String> {
+    vault.read(id).ok().map(|note| note.to_text())
+}
+
+/// Write through the vault rather than to the path, so a sync gets the same
+/// temporary-file-then-rename discipline every other write in Brain gets.
+fn write_text(vault: &Vault, id: &NoteId, text: &str) -> Result<(), ()> {
+    let note = Note::from_text(id.clone(), text);
+    vault.write(&note).map_err(|_| ())
+}
+
+/// Where the agreed snapshot is kept: beside the vectors, in the vault's own
+/// disposable directory.
+///
+/// Losing it is not fatal. An empty base makes the next pass a first pass,
+/// which pushes and pulls everything and calls nothing a conflict that is not
+/// a genuine one — slow, and correct.
+pub fn default_base_path(vault: &std::path::Path) -> std::path::PathBuf {
+    vault.join(".brain").join("sync.json")
+}
+
+/// Read the agreed snapshot, or start from nothing.
+pub fn load_base(path: &std::path::Path) -> Snapshot {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Snapshot::new();
+    };
+    let Ok(raw) = serde_json::from_str::<BTreeMap<String, u64>>(&text) else {
+        return Snapshot::new();
+    };
+    raw.into_iter()
+        .map(|(id, hash)| (NoteId::from_relative(id), Hash(hash)))
+        .collect()
+}
+
+/// Write the agreed snapshot, atomically.
+pub fn save_base(base: &Snapshot, path: &std::path::Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let raw: BTreeMap<&str, u64> = base
+        .iter()
+        .map(|(id, hash)| (id.as_str(), hash.0))
+        .collect();
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, serde_json::to_string(&raw)?)?;
+    std::fs::rename(&temporary, path)
 }
 
 #[cfg(test)]
@@ -464,6 +696,224 @@ mod tests {
             conflict_id(&id("A.md"), "phone", "2026-08-04").as_str(),
             "A (conflict 2026-08-04 from phone).md"
         );
+    }
+
+    // ---- running a pass against a fake server ----
+
+    use std::cell::RefCell;
+
+    /// A server that is a map, plus a switch for refusing writes the way a
+    /// real one does when somebody else got there first.
+    #[derive(Default)]
+    struct Server {
+        held: RefCell<BTreeMap<NoteId, String>>,
+        refuse_writes: bool,
+    }
+
+    impl Server {
+        fn with(notes: &[(&str, &str)]) -> Self {
+            Self {
+                held: RefCell::new(
+                    notes
+                        .iter()
+                        .map(|(path, text)| (id(path), (*text).to_string()))
+                        .collect(),
+                ),
+                refuse_writes: false,
+            }
+        }
+
+        fn text_of(&self, path: &str) -> Option<String> {
+            self.held.borrow().get(&id(path)).cloned()
+        }
+    }
+
+    impl Remote for Server {
+        fn list(&self) -> Result<Snapshot, SyncError> {
+            Ok(self
+                .held
+                .borrow()
+                .iter()
+                .map(|(id, text)| (id.clone(), Hash::of(text)))
+                .collect())
+        }
+
+        fn get(&self, ids: &[NoteId]) -> Result<Vec<(NoteId, String)>, SyncError> {
+            let held = self.held.borrow();
+            Ok(ids
+                .iter()
+                .filter_map(|id| held.get(id).map(|text| (id.clone(), text.clone())))
+                .collect())
+        }
+
+        fn put(&self, id: &NoteId, text: &str, base: Option<Hash>) -> Put {
+            if self.refuse_writes {
+                return Put::Failed("no".into());
+            }
+            let mut held = self.held.borrow_mut();
+            let current = held.get(id).map(|text| Hash::of(text));
+            if current != base {
+                return Put::Stale(current);
+            }
+            held.insert(id.clone(), text.to_string());
+            Put::Done(Hash::of(text))
+        }
+
+        fn delete(&self, id: &NoteId, base: Option<Hash>) -> Put {
+            if self.refuse_writes {
+                return Put::Failed("no".into());
+            }
+            let mut held = self.held.borrow_mut();
+            let current = held.get(id).map(|text| Hash::of(text));
+            if current.is_some() && current != base {
+                return Put::Stale(current);
+            }
+            held.remove(id);
+            Put::Done(Hash(0))
+        }
+    }
+
+    fn vault(notes: &[(&str, &str)]) -> (tempfile::TempDir, Vault) {
+        let directory = tempfile::tempdir().expect("temp dir");
+        for (path, text) in notes {
+            let full = directory.path().join(path);
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent).expect("parent");
+            }
+            std::fs::write(full, text).expect("write");
+        }
+        let vault = Vault::new(directory.path().to_path_buf());
+        (directory, vault)
+    }
+
+    fn pass(vault: &Vault, base: &Snapshot, server: &Server) -> (Snapshot, Report) {
+        run(vault, base, server, "phone", "2026-08-04").expect("pass")
+    }
+
+    #[test]
+    fn a_first_pass_moves_both_ways_and_lands_on_disk() {
+        let (dir, vault) = vault(&[("Mine.md", "mine")]);
+        let server = Server::with(&[("Theirs.md", "theirs")]);
+
+        let (base, report) = pass(&vault, &Snapshot::new(), &server);
+
+        assert_eq!(report.pushed, 1);
+        assert_eq!(report.pulled, 1);
+        assert_eq!(server.text_of("Mine.md").as_deref(), Some("mine"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("Theirs.md")).expect("read"),
+            "theirs"
+        );
+        // Both sides are in the base now, so a second pass is quiet.
+        assert_eq!(base.len(), 2);
+        assert!(pass(&vault, &base, &server).1.is_quiet());
+    }
+
+    #[test]
+    fn a_conflict_lands_beside_the_note_and_leaves_it_alone() {
+        let (dir, vault) = vault(&[("Ownership.md", "what I typed")]);
+        let server = Server::with(&[("Ownership.md", "what they typed")]);
+        let base: Snapshot = [(id("Ownership.md"), Hash::of("before"))]
+            .into_iter()
+            .collect();
+
+        let (_, report) = pass(&vault, &base, &server);
+
+        assert_eq!(report.conflicted, 1);
+        // The note being typed on is untouched.
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("Ownership.md")).expect("read"),
+            "what I typed"
+        );
+        // And theirs is a real file beside it, which is why it survives the
+        // app being closed.
+        assert_eq!(
+            std::fs::read_to_string(
+                dir.path()
+                    .join("Ownership (conflict 2026-08-04 from phone).md")
+            )
+            .expect("read"),
+            "what they typed"
+        );
+    }
+
+    #[test]
+    fn a_deletion_elsewhere_removes_the_file_here() {
+        let (dir, vault) = vault(&[("Gone.md", "text")]);
+        let server = Server::default();
+        let base: Snapshot = [(id("Gone.md"), Hash::of("text"))].into_iter().collect();
+
+        let (base, report) = pass(&vault, &base, &server);
+
+        assert_eq!(report.deleted_here, 1);
+        assert!(!dir.path().join("Gone.md").exists());
+        assert!(base.is_empty());
+    }
+
+    #[test]
+    fn a_failed_transfer_does_not_advance_the_base() {
+        let (_dir, vault) = vault(&[("A.md", "text")]);
+        let server = Server {
+            refuse_writes: true,
+            ..Server::default()
+        };
+
+        let (base, report) = pass(&vault, &Snapshot::new(), &server);
+
+        assert_eq!(report.failed, 1);
+        assert_eq!(report.pushed, 0);
+        // Left out of the base, so the next pass still sees it as work. A pass
+        // that dies half way leaves the vault behind rather than wrong.
+        assert!(base.is_empty(), "{base:?}");
+    }
+
+    #[test]
+    fn two_machines_converge_through_the_same_server() {
+        let (here_dir, here) = vault(&[("A.md", "from here")]);
+        let (there_dir, there) = vault(&[("B.md", "from there")]);
+        let server = Server::default();
+
+        let (here_base, _) = pass(&here, &Snapshot::new(), &server);
+        let (there_base, _) = pass(&there, &Snapshot::new(), &server);
+        // The second machine's push is news to the first.
+        let (_here_base, report) = pass(&here, &here_base, &server);
+        assert_eq!(report.pulled, 1);
+
+        for directory in [here_dir.path(), there_dir.path()] {
+            assert!(directory.join("A.md").exists(), "{directory:?} lost A");
+            assert!(directory.join("B.md").exists(), "{directory:?} lost B");
+        }
+        assert_eq!(there_base.len(), 2);
+    }
+
+    #[test]
+    fn the_base_survives_a_round_trip_through_its_file() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = default_base_path(directory.path());
+        let base: Snapshot = [
+            (id("A.md"), Hash::of("one")),
+            (id("Meetings/B.md"), Hash::of("two")),
+        ]
+        .into_iter()
+        .collect();
+
+        save_base(&base, &path).expect("save");
+
+        assert_eq!(load_base(&path), base);
+    }
+
+    #[test]
+    fn a_missing_or_corrupt_base_starts_a_first_pass_rather_than_failing() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = default_base_path(directory.path());
+
+        assert!(load_base(&path).is_empty());
+
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+        std::fs::write(&path, "{ not json").expect("write");
+        // Slow, and correct: everything is pushed and pulled again, and
+        // nothing that is not a genuine conflict is called one.
+        assert!(load_base(&path).is_empty());
     }
 
     // ---- the hash ----

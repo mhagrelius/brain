@@ -5,12 +5,13 @@ they work here: a core that is not tied to GTK, and a vault that reaches more
 than one machine. This is the order to do them in and the reasoning that picked
 it.
 
-**Where this has got to.** Phases 0 to 3 are done and on `main`. Phase 4 has
-its two halves that can be tested in isolation — the planner in
-`core/src/sync.rs` and the service in `server/src/notes.rs` — and does not yet
-have the part that joins them: the client transport, the notebook's sync pass,
-and the conflict banner. Nothing in Brain calls any of it yet, which is
-deliberate; a half-wired sync is the one thing here that could lose a note.
+**Where this has got to.** Phases 0 to 3 are done and on `main`. Phase 4 is
+built and proved end to end — `cargo run --example sync_check` drives the real
+client against a real server over a socket and watches two machines push,
+pull, and turn a double edit into a note beside the original — but **nothing in
+the application calls it yet**. What is left is the notebook's pass and the
+conflict banner, listed under phase 4 below. That order is deliberate: a
+half-wired sync is the one thing in this plan that could lose a note.
 
 `DESIGN.md` still describes what was built and why. Where this plan contradicts
 it — sync, most obviously, which `DESIGN.md` calls somebody else's problem —
@@ -105,29 +106,36 @@ plugs in — one type to reimplement. Embed once on the NAS, every client pulls.
 This also removes the current duplication of embedding the same vault three
 times on three machines.
 
-### 4. Sync — half built
+### 4. Sync — built, not yet wired in
 
-Done: `core/src/sync.rs`, the planner, with the three-snapshot comparison and
-both rules below; and `server/src/notes.rs`, the vault as real Markdown with
-stale writes refused. Both are tested, and the service is verified over real
-HTTP — a stale write comes back 409 with the current hash, and a note id of
-`../escaped.md` is refused without touching the filesystem.
+Done and tested: `core/src/sync.rs` — the three-snapshot planner, both rules
+below, and `sync::run`, which applies a plan and returns the base for the next
+pass; `server/src/notes.rs` — the vault as real Markdown with stale writes
+refused; and `src/ui/sync_client.rs` — the transport, behind `sync::Remote`.
 
-Still to do, and none of it started:
+The order inside a pass is renames, pulls, pushes, deletions. Renames first
+because everything after refers to notes by their new ids; deletions last
+because a deletion is the only step the next pass cannot undo, so a failure
+earlier leaves the note in place rather than gone. **The base returned is what
+happened, not what was planned** — every failed transfer is left out of it, so
+a pass that dies half way leaves the vault behind rather than wrong. That is
+the promise the embedding catch-up already makes.
 
-- **The client transport.** `src/ui/sync_client.rs`, the same shape as
-  `shared_vectors.rs`: soup, on the worker thread, behind a trait in the core.
-- **The base snapshot.** The planner needs what the two sides agreed on last
-  pass, kept in `.brain/` beside the vectors. Losing it is not fatal — an
-  empty base makes a first pass, which pushes and pulls everything and calls
-  nothing a conflict that is not one — but it has to be written somewhere.
-- **The pass itself**, on `Notebook`, applying a `Plan`: the ordering matters
-  and is not obvious. Renames before edits, deletions last, and the base is
-  only updated for the notes whose transfer actually succeeded, so a pass that
-  dies half way through is behind rather than wrong. That is the same promise
-  the embedding catch-up makes.
-- **The conflict UI**, which is one banner string and one sidebar filter mode,
-  per the notes below.
+`cargo run --example sync_check -- <url> <token>` proves it against a real
+server: two vaults standing in for two machines, push, pull, a double edit
+becoming a conflict copy, and the original untouched.
+
+Still to do:
+
+- **The pass on `Notebook`**, on a timer and a worker thread, the way the
+  embedding catch-up runs — including reloading the open note if a pull
+  changed it underneath, which is the existing `absorb_external_changes` path
+  and should reuse it rather than grow a second one.
+- **The conflict UI**: one `AdwBanner` string and one sidebar filter mode, per
+  the notes below.
+- **The configuration**: a URL and a token, entered on purpose. Unlike the
+  vector store, this one holds the notes themselves, so it must never be
+  something Brain goes looking for by default.
 
 Vault on the NAS as real Markdown files in a container, git-backed for history,
 readable by familiar and by `cat`. The service exposes per-note content hashes,
