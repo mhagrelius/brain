@@ -1,24 +1,25 @@
 [package]
-name = "brain-vectors"
+name = "brain-server"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
-description = "A shared vector store, so one vault is embedded once rather than once per machine"
+description = "The vault and its vectors, shared between one person's machines"
 license = "GPL-3.0-or-later"
 
 [[bin]]
-name = "brain-vectors"
+name = "brain-server"
 path = "src/main.rs"
 
 [lib]
-name = "brain_vectors"
+name = "brain_server"
 path = "src/lib.rs"
 
 [dependencies]
-# For `Digest`, and nothing else. The server must hash exactly the way the
-# client does or every lookup misses, and sharing the type is the only way to
-# be sure of that — a second implementation of the same hash is a bug waiting
-# for someone to change one of them.
+# For `semantic::Digest` and `sync::Hash`, and nothing else. The server must
+# hash exactly the way the client does or every lookup misses and every write
+# looks stale, and sharing the types is the only way to be sure of that — a
+# second implementation of the same hash is a bug waiting for someone to
+# change one of them.
 brain-core = { path = "../core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

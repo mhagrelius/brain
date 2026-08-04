@@ -3,18 +3,23 @@
 //! Configuration is environment variables, because that is what a container
 //! manager hands a process:
 //!
-//! - `BRAIN_VECTORS_TOKEN` — the shared secret. **Required**: a vector store
-//!   with no token is one anything on the network can fill with plausible
-//!   nonsense, and refusing to start is the only way that failure is loud.
+//! - `BRAIN_VECTORS_TOKEN` — the shared secret. **Required**: a service with
+//!   no token is one anything on the network can fill with plausible nonsense
+//!   or read a vault out of, and refusing to start is the only way that
+//!   failure is loud.
 //! - `BRAIN_VECTORS_ADDR` — where to listen, default `0.0.0.0:8082`.
 //! - `BRAIN_VECTORS_DATA` — the data directory, default `/var/lib/brain-vectors`.
+//!   The vectors are a file in it and the vault is the `vault/` folder beside
+//!   them — real Markdown, so whatever backs up that directory backs up the
+//!   notes, and `git init` in it gives history for free.
 
 use std::io::{BufReader, BufWriter};
 use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use brain_vectors::{default_store_path, http, route, Store};
+use brain_server::{default_store_path, http, notes, route, Store};
 
 /// A client that opens a connection and then says nothing must not hold a
 /// thread for ever.
@@ -41,10 +46,21 @@ fn main() {
     let path = default_store_path();
 
     let store = Store::load(&path);
+    let vault_root = path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("vault");
+    if let Err(error) = std::fs::create_dir_all(&vault_root) {
+        eprintln!("could not make {}: {error}", vault_root.display());
+        std::process::exit(1);
+    }
+    let vault = Arc::new(notes::Vault::new(PathBuf::from(&vault_root)));
     println!(
-        "brain-vectors: {} vectors from {}",
+        "brain-server: {} vectors from {}, {} notes in {}",
         store.len(),
-        path.display()
+        path.display(),
+        vault.list().len(),
+        vault_root.display()
     );
     let store = Arc::new(Mutex::new(store));
 
@@ -64,9 +80,10 @@ fn main() {
         // A thread per connection. The client count is the number of machines
         // one person owns, and a pool would be more machinery than the problem.
         let store = Arc::clone(&store);
+        let vault = Arc::clone(&vault);
         let token = token.clone();
         let path = path.clone();
-        std::thread::spawn(move || serve(stream, &token, &store, &path));
+        std::thread::spawn(move || serve(stream, &token, &store, &vault, &path));
     }
 }
 
@@ -94,7 +111,13 @@ fn healthy() -> bool {
     BufReader::new(stream).read_line(&mut status).is_ok() && status.starts_with("HTTP/1.1 200")
 }
 
-fn serve(stream: TcpStream, token: &str, store: &Mutex<Store>, path: &std::path::Path) {
+fn serve(
+    stream: TcpStream,
+    token: &str,
+    store: &Mutex<Store>,
+    vault: &notes::Vault,
+    path: &std::path::Path,
+) {
     let _ = stream.set_read_timeout(Some(TIMEOUT));
     let _ = stream.set_write_timeout(Some(TIMEOUT));
     let Ok(write_half) = stream.try_clone() else {
@@ -106,9 +129,13 @@ fn serve(stream: TcpStream, token: &str, store: &Mutex<Store>, path: &std::path:
     let (status, body) = match http::read_request(&mut input) {
         Ok(request) => {
             let writing = request.path == "/publish";
-            // The lock is held across the route and the save. Both are short,
-            // and a second publish landing mid-write would otherwise be able
-            // to rename a file out from under this one.
+            // The lock is held across the whole route and the save, which
+            // serialises the note writes as well as the vector ones. That is
+            // deliberate rather than incidental: two clients writing the same
+            // note at once would otherwise both read the same current hash,
+            // both find it matches their base, and both write — which is the
+            // one way a stale-write check can be got round. One person's
+            // machines are not a throughput problem.
             let mut store = match store.lock() {
                 Ok(store) => store,
                 // A panicked thread poisoned it. The store is a cache of
@@ -116,11 +143,11 @@ fn serve(stream: TcpStream, token: &str, store: &Mutex<Store>, path: &std::path:
                 // taking the service down.
                 Err(poisoned) => poisoned.into_inner(),
             };
-            let answer = route(&request, token, &mut store);
+            let answer = route(&request, token, &mut store, vault);
             if writing && answer.0 == 200 {
                 if let Err(error) = store.save(path) {
                     // In memory and serving; the next publish writes again.
-                    eprintln!("brain-vectors: could not save the store: {error}");
+                    eprintln!("brain-server: could not save the store: {error}");
                 }
             }
             answer

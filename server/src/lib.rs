@@ -1,11 +1,20 @@
-//! A shared vector store: the wire format, the store, and the routing.
+//! What one person's machines share: a vault, and the vectors over it.
+//!
+//! Two concerns, one service, because they are wanted by the same machines on
+//! the same network with the same secret, and two containers to run would be
+//! two things to keep level for no gain. They share only the HTTP layer and
+//! the token; neither knows the other exists.
+//!
+//! - [`notes`] is the vault, as real Markdown files. The server stores and
+//!   refuses stale writes. It never merges and never picks a winner.
+//! - The rest of this file is the vector store, below.
+//!
+//! # Why the vectors went first
 //!
 //! Brain embeds a vault on whichever machine opened it first. Without this,
 //! every other machine pays the same minutes again for text that hashed
 //! identically. With it, the second machine fetches and the model is never
 //! called.
-//!
-//! # Why this is the first thing on a network
 //!
 //! Vectors are the one derived thing Brain keeps that it cannot rebuild
 //! cheaply — and they are still *derived*. A store that is unreachable, wrong,
@@ -29,6 +38,7 @@ use brain_core::semantic::Digest;
 use serde::{Deserialize, Serialize};
 
 pub mod http;
+pub mod notes;
 
 /// One note's vectors: a unit vector per chunk, in the order the chunks appear.
 pub type Chunks = Vec<Vec<f32>>;
@@ -136,14 +146,52 @@ impl Store {
 /// `/health` is deliberately unauthenticated — a container health check should
 /// not need the shared secret, and the only thing it discloses is that the
 /// service is up and roughly how much it holds.
-pub fn route(request: &http::Request, token: &str, store: &mut Store) -> (u16, Vec<u8>) {
+pub fn route(
+    request: &http::Request,
+    token: &str,
+    store: &mut Store,
+    vault: &notes::Vault,
+) -> (u16, Vec<u8>) {
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/health") => (
             200,
             format!("{{\"ok\":true,\"vectors\":{}}}", store.len()).into_bytes(),
         ),
-        (_, "/fetch") | (_, "/publish") if !authorised(request, token) => {
+        // Everything but `/health` needs the token. Listed as a prefix rather
+        // than route by route so a new route is authenticated by default —
+        // forgetting to add one to this list should fail closed.
+        (_, path) if path != "/health" && !authorised(request, token) => {
             (401, b"{\"error\":\"unauthorised\"}".to_vec())
+        }
+        ("GET", "/notes") => {
+            let body = serde_json::to_vec(&notes::ListResponse {
+                notes: vault.list(),
+            })
+            .unwrap_or_else(|_| b"{\"notes\":[]}".to_vec());
+            (200, body)
+        }
+        ("POST", "/notes/get") => {
+            match serde_json::from_slice::<notes::GetRequest>(&request.body) {
+                Ok(asked) => {
+                    let found = asked.ids.iter().filter_map(|id| vault.read(id)).collect();
+                    let body = serde_json::to_vec(&notes::GetResponse { notes: found })
+                        .unwrap_or_else(|_| b"{\"notes\":[]}".to_vec());
+                    (200, body)
+                }
+                Err(_) => (400, b"{\"error\":\"bad request\"}".to_vec()),
+            }
+        }
+        ("POST", "/notes/put") => {
+            match serde_json::from_slice::<notes::PutRequest>(&request.body) {
+                Ok(put) => wrote(vault.write(&put.id, &put.text, put.base)),
+                Err(_) => (400, b"{\"error\":\"bad request\"}".to_vec()),
+            }
+        }
+        ("POST", "/notes/delete") => {
+            match serde_json::from_slice::<notes::DeleteRequest>(&request.body) {
+                Ok(gone) => wrote(vault.delete(&gone.id, gone.base)),
+                Err(_) => (400, b"{\"error\":\"bad request\"}".to_vec()),
+            }
         }
         ("POST", "/fetch") => match serde_json::from_slice::<FetchRequest>(&request.body) {
             Ok(asked) => {
@@ -162,6 +210,25 @@ pub fn route(request: &http::Request, token: &str, store: &mut Store) -> (u16, V
             Err(_) => (400, b"{\"error\":\"bad request\"}".to_vec()),
         },
         _ => (404, b"{\"error\":\"no such route\"}".to_vec()),
+    }
+}
+
+/// A write's outcome as a status and a body.
+///
+/// **409 carries what the server actually holds.** A refusal that only said
+/// "no" would leave the client with nothing to plan against and no way out of
+/// the loop; the current hash is what turns a refusal into a conflict it can
+/// resolve.
+fn wrote(outcome: notes::Wrote) -> (u16, Vec<u8>) {
+    match outcome {
+        notes::Wrote::Done(hash) => (200, format!("{{\"hash\":{hash}}}").into_bytes()),
+        notes::Wrote::Stale(current) => {
+            let body = serde_json::to_vec(&notes::Stale { current })
+                .unwrap_or_else(|_| b"{\"current\":null}".to_vec());
+            (409, body)
+        }
+        notes::Wrote::Rejected(_) => (400, b"{\"error\":\"bad note id\"}".to_vec()),
+        notes::Wrote::Failed(_) => (500, b"{\"error\":\"could not write\"}".to_vec()),
     }
 }
 
@@ -210,6 +277,14 @@ mod tests {
 
     const TOKEN: &str = "a-token-of-at-least-thirty-two-chars";
 
+    /// Route one request against a throwaway vault. The vault routes have
+    /// their own tests in `notes`; these are about status codes and auth.
+    fn ask(request: &http::Request, store: &mut Store) -> (u16, Vec<u8>) {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let vault = notes::Vault::new(directory.path().to_path_buf());
+        route(request, TOKEN, store, &vault)
+    }
+
     fn request(method: &str, path: &str, token: Option<&str>, body: &str) -> http::Request {
         let auth = match token {
             Some(token) => format!("Authorization: Bearer {token}\r\n"),
@@ -227,7 +302,7 @@ mod tests {
         // A container health check should not need the shared secret, and all
         // it discloses is that the service is up.
         let mut store = Store::default();
-        let (status, body) = route(&request("GET", "/health", None, ""), TOKEN, &mut store);
+        let (status, body) = ask(&request("GET", "/health", None, ""), &mut store);
 
         assert_eq!(status, 200);
         assert_eq!(
@@ -241,14 +316,10 @@ mod tests {
         let mut store = Store::default();
         let asked = "{\"model\":\"nomic\",\"digests\":[7]}";
 
-        let (status, _) = route(&request("POST", "/fetch", None, asked), TOKEN, &mut store);
+        let (status, _) = ask(&request("POST", "/fetch", None, asked), &mut store);
         assert_eq!(status, 401);
 
-        let (status, _) = route(
-            &request("POST", "/fetch", Some("wrong"), asked),
-            TOKEN,
-            &mut store,
-        );
+        let (status, _) = ask(&request("POST", "/fetch", Some("wrong"), asked), &mut store);
         assert_eq!(status, 401);
     }
 
@@ -256,27 +327,25 @@ mod tests {
     fn a_publish_then_a_fetch_round_trips_over_the_wire_format() {
         let mut store = Store::default();
 
-        let (status, body) = route(
+        let (status, body) = ask(
             &request(
                 "POST",
                 "/publish",
                 Some(TOKEN),
                 "{\"model\":\"nomic\",\"entries\":[[7,[[0.5,0.5]]]]}",
             ),
-            TOKEN,
             &mut store,
         );
         assert_eq!(status, 200);
         assert_eq!(String::from_utf8_lossy(&body), "{\"added\":1}");
 
-        let (status, body) = route(
+        let (status, body) = ask(
             &request(
                 "POST",
                 "/fetch",
                 Some(TOKEN),
                 "{\"model\":\"nomic\",\"digests\":[7,9]}",
             ),
-            TOKEN,
             &mut store,
         );
         assert_eq!(status, 200);
@@ -287,9 +356,8 @@ mod tests {
     #[test]
     fn a_body_that_is_not_the_expected_shape_is_a_bad_request() {
         let mut store = Store::default();
-        let (status, _) = route(
+        let (status, _) = ask(
             &request("POST", "/fetch", Some(TOKEN), "{\"model\":\"nomic\"}"),
-            TOKEN,
             &mut store,
         );
 
@@ -299,11 +367,7 @@ mod tests {
     #[test]
     fn an_unknown_route_is_a_404_and_not_a_hint() {
         let mut store = Store::default();
-        let (status, _) = route(
-            &request("GET", "/vectors", Some(TOKEN), ""),
-            TOKEN,
-            &mut store,
-        );
+        let (status, _) = ask(&request("GET", "/vectors", Some(TOKEN), ""), &mut store);
 
         assert_eq!(status, 404);
     }

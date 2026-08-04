@@ -18,7 +18,7 @@ See `PLAN.md` for where this is going: the split exists so a second shell on ano
 - `cargo run --example icons_check` — asserts every icon name resolves. An unresolved one draws a missing-image glyph and warns about nothing, so add new names to `USED`.
 - `./install.sh` — release build, installs under `~/.local`. `./uninstall.sh` reverses it.
 - `packaging/build-flatpak.sh` and `packaging/build-deb.sh` — distribution artifacts.
-- `server/` is `brain-vectors`, the shared vector store. `podman build -f server/Containerfile -t brain-vectors .` from the repo root — the context must be the workspace, since it depends on `brain-core` by path. It needs `BRAIN_VECTORS_TOKEN` (32 characters or more) and refuses to start without one.
+- `server/` is `brain-server`: the shared vector store, and the vault as real Markdown files. `podman build -f server/Containerfile -t brain-server .` from the repo root — the context must be the workspace, since it depends on `brain-core` by path. It needs `BRAIN_VECTORS_TOKEN` (32 characters or more) and refuses to start without one. **`notes::path_of` is the only thing between a note id off the network and the server's filesystem** — it allows rather than forbids, and its test table is the specification.
 
 ## Layout
 

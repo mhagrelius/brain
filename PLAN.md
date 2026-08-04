@@ -2,8 +2,15 @@
 
 Brain is the test case for two changes that would apply to the sibling apps if
 they work here: a core that is not tied to GTK, and a vault that reaches more
-than one machine. Neither is started yet. This is the order to do them in and
-the reasoning that picked it.
+than one machine. This is the order to do them in and the reasoning that picked
+it.
+
+**Where this has got to.** Phases 0 to 3 are done and on `main`. Phase 4 has
+its two halves that can be tested in isolation — the planner in
+`core/src/sync.rs` and the service in `server/src/notes.rs` — and does not yet
+have the part that joins them: the client transport, the notebook's sync pass,
+and the conflict banner. Nothing in Brain calls any of it yet, which is
+deliberate; a half-wired sync is the one thing here that could lose a note.
 
 `DESIGN.md` still describes what was built and why. Where this plan contradicts
 it — sync, most obviously, which `DESIGN.md` calls somebody else's problem —
@@ -98,7 +105,29 @@ plugs in — one type to reimplement. Embed once on the NAS, every client pulls.
 This also removes the current duplication of embedding the same vault three
 times on three machines.
 
-### 4. Sync
+### 4. Sync — half built
+
+Done: `core/src/sync.rs`, the planner, with the three-snapshot comparison and
+both rules below; and `server/src/notes.rs`, the vault as real Markdown with
+stale writes refused. Both are tested, and the service is verified over real
+HTTP — a stale write comes back 409 with the current hash, and a note id of
+`../escaped.md` is refused without touching the filesystem.
+
+Still to do, and none of it started:
+
+- **The client transport.** `src/ui/sync_client.rs`, the same shape as
+  `shared_vectors.rs`: soup, on the worker thread, behind a trait in the core.
+- **The base snapshot.** The planner needs what the two sides agreed on last
+  pass, kept in `.brain/` beside the vectors. Losing it is not fatal — an
+  empty base makes a first pass, which pushes and pulls everything and calls
+  nothing a conflict that is not one — but it has to be written somewhere.
+- **The pass itself**, on `Notebook`, applying a `Plan`: the ordering matters
+  and is not obvious. Renames before edits, deletions last, and the base is
+  only updated for the notes whose transfer actually succeeded, so a pass that
+  dies half way through is behind rather than wrong. That is the same promise
+  the embedding catch-up makes.
+- **The conflict UI**, which is one banner string and one sidebar filter mode,
+  per the notes below.
 
 Vault on the NAS as real Markdown files in a container, git-backed for history,
 readable by familiar and by `cat`. The service exposes per-note content hashes,

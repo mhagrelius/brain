@@ -20,5 +20,6 @@ pub mod note;
 pub mod notebook;
 pub mod search;
 pub mod semantic;
+pub mod sync;
 pub mod tree;
 pub mod vault;

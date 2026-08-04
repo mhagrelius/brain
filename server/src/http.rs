@@ -113,7 +113,9 @@ pub fn respond(output: &mut impl Write, status: u16, body: &[u8]) -> io::Result<
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
+        409 => "Conflict",
         413 => "Payload Too Large",
+        500 => "Internal Server Error",
         _ => "Error",
     };
     write!(

@@ -1,10 +1,14 @@
-# brain-vectors, for the NAS's container manager.
+# brain-server, for the NAS's container manager.
 #
-#   podman build -f server/Containerfile -t brain-vectors .
-#   podman run -d --name brain-vectors \
+#   podman build -f server/Containerfile -t brain-server .
+#   podman run -d --name brain-server \
 #     -e BRAIN_VECTORS_TOKEN="$(openssl rand -hex 32)" \
-#     -v brain-vectors:/var/lib/brain-vectors \
-#     -p 8082:8082 brain-vectors
+#     -v brain-server:/var/lib/brain-vectors \
+#     -p 8082:8082 brain-server
+#
+# The volume holds both the vector cache and `vault/`, which is real Markdown:
+# whatever backs up that volume backs up the notes, and `git init` inside
+# `vault/` gives history for free.
 #
 # Built from the workspace root, because the server depends on brain-core by
 # path and a build context of `server/` alone cannot see it.
@@ -21,7 +25,7 @@ COPY core/src core/src
 COPY server/src server/src
 # Only the server. Building the workspace would pull in the GTK shell, which
 # wants libadwaita and has no business in a headless image.
-RUN cargo build --release --locked --package brain-vectors
+RUN cargo build --release --locked --package brain-server
 
 FROM docker.io/library/debian:bookworm-slim
 # Nothing is built here and nothing is downloaded at runtime, so the image
@@ -32,7 +36,7 @@ RUN rm -rf /var/lib/apt/lists/*
 RUN useradd --system --create-home --uid 10001 vectors \
     && mkdir -p /var/lib/brain-vectors \
     && chown vectors:vectors /var/lib/brain-vectors
-COPY --from=build /src/target/release/brain-vectors /usr/local/bin/brain-vectors
+COPY --from=build /src/target/release/brain-server /usr/local/bin/brain-server
 
 USER vectors
 VOLUME /var/lib/brain-vectors
@@ -42,6 +46,6 @@ ENV BRAIN_VECTORS_ADDR=0.0.0.0:8082 \
 
 # `/health` needs no token, which is the reason it needs no token.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
-    CMD ["/usr/local/bin/brain-vectors", "--health"]
+    CMD ["/usr/local/bin/brain-server", "--health"]
 
-ENTRYPOINT ["/usr/local/bin/brain-vectors"]
+ENTRYPOINT ["/usr/local/bin/brain-server"]
