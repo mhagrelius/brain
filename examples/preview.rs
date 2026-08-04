@@ -210,6 +210,39 @@ fn main() {
         );
     }
 
+    // What a sync leaves behind: a banner saying how many notes were edited in
+    // two places, and the sidebar narrowed to the copies it wrote. Both halves
+    // are things that already existed — the banner and the search — which is
+    // the whole reason this state needed no new UI.
+    let conflicted: BrainWindow = glib::Object::new();
+    conflicted.set_tags(&index.tags());
+    conflicted.show_note(Some((&opened, &note.to_text())));
+    conflicted.set_results(&[
+        (
+            NoteId::from_relative("Rust ownership (conflict 2026-08-04 from phone).md"),
+            "Moves are destructive and borrows are not.".to_string(),
+        ),
+        (
+            NoteId::from_relative("Borrow checker (conflict 2026-08-04 from phone).md"),
+            "One mutable borrow, or many shared ones.".to_string(),
+        ),
+    ]);
+    conflicted.set_result_count(Some(2));
+    conflicted.show_search("(conflict ");
+    conflicted.set_banner(
+        Some("2 notes were edited in two places — both versions are here"),
+        Some("Show"),
+    );
+    if let Some(content) = conflicted.content() {
+        conflicted.set_content(gtk::Widget::NONE);
+        render(
+            &content,
+            1100,
+            600,
+            &format!("{out}/conflicts-{}.png", scheme(dark)),
+        );
+    }
+
     // The window at first start: a vault with nothing in it yet.
     let fresh: BrainWindow = glib::Object::new();
     fresh.set_rows(&[]);

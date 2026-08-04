@@ -60,6 +60,16 @@ pub struct Config {
     /// Brain keeps anything about where a note's fingerprint may go.
     #[serde(default)]
     pub vectors_token: Option<String>,
+    /// Where the vault server is, for syncing the notes themselves.
+    ///
+    /// Absent or empty means no syncing, which is the default and stays the
+    /// default until both this and the token are filled in on purpose. Unlike
+    /// the vector store there is nothing sensible to guess at here — this one
+    /// holds the notes.
+    #[serde(default)]
+    pub sync_url: Option<String>,
+    #[serde(default)]
+    pub sync_token: Option<String>,
     /// Which folders were open in the sidebar. View state, not vault state —
     /// losing it costs one click per folder, so it lives here rather than
     /// anywhere near the notes.
@@ -195,6 +205,8 @@ mod tests {
             embedding_url: Some("http://127.0.0.1:8081".into()),
             vectors_url: Some("http://nas:8082".into()),
             vectors_token: Some("a-token-of-at-least-thirty-two-chars".into()),
+            sync_url: Some("http://nas:8082".into()),
+            sync_token: Some("another-token-of-thirty-two-or-more".into()),
             expanded_folders: vec!["Meetings".into()],
         };
         config.save(&path).expect("save");

@@ -1284,6 +1284,20 @@ impl BrainWindow {
             .unwrap_or_default()
     }
 
+    /// Put a query in the sidebar's search entry and show the sidebar.
+    ///
+    /// The application uses this to point at the conflict copies a sync wrote.
+    /// The entry is the filter that already exists, so "show me those notes"
+    /// needs no second list and no new pane.
+    pub fn show_search(&self, query: &str) {
+        if let Some(split) = self.imp().split.borrow().as_ref() {
+            split.set_show_sidebar(true);
+        }
+        if let Some(search) = self.imp().search.borrow().as_ref() {
+            search.set_text(query);
+        }
+    }
+
     /// Type into the sidebar's search entry, for tests.
     pub fn search_for_test(&self, query: &str) {
         if let Some(search) = self.imp().search.borrow().as_ref() {

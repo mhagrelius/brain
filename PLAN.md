@@ -5,13 +5,16 @@ they work here: a core that is not tied to GTK, and a vault that reaches more
 than one machine. This is the order to do them in and the reasoning that picked
 it.
 
-**Where this has got to.** Phases 0 to 3 are done and on `main`. Phase 4 is
-built and proved end to end — `cargo run --example sync_check` drives the real
-client against a real server over a socket and watches two machines push,
-pull, and turn a double edit into a note beside the original — but **nothing in
-the application calls it yet**. What is left is the notebook's pass and the
-conflict banner, listed under phase 4 below. That order is deliberate: a
-half-wired sync is the one thing in this plan that could lose a note.
+**Where this has got to.** Phases 0 to 4 are done and on `main`. `./sync-check.sh`
+proves the whole path on one machine: it starts a throwaway server, drives it
+with the real client, and watches two vaults push, pull, and turn a double edit
+into a note beside the original.
+
+Sync is off until a URL and a token are put in the config on purpose. Unlike
+the vector store there is nothing sensible for Brain to guess at — this one
+holds the notes.
+
+Next is phase 5, the macOS shell.
 
 `DESIGN.md` still describes what was built and why. Where this plan contradicts
 it — sync, most obviously, which `DESIGN.md` calls somebody else's problem —
@@ -106,52 +109,34 @@ plugs in — one type to reimplement. Embed once on the NAS, every client pulls.
 This also removes the current duplication of embedding the same vault three
 times on three machines.
 
-### 4. Sync — built, not yet wired in
+### 4. Sync
 
-Done and tested: `core/src/sync.rs` — the three-snapshot planner, both rules
-below, and `sync::run`, which applies a plan and returns the base for the next
-pass; `server/src/notes.rs` — the vault as real Markdown with stale writes
-refused; and `src/ui/sync_client.rs` — the transport, behind `sync::Remote`.
+The vault on the NAS as real Markdown files, clients keeping full local
+replicas, per-note hash versioning with stale writes refused.
 
-The order inside a pass is renames, pulls, pushes, deletions. Renames first
-because everything after refers to notes by their new ids; deletions last
-because a deletion is the only step the next pass cannot undo, so a failure
-earlier leaves the note in place rather than gone. **The base returned is what
-happened, not what was planned** — every failed transfer is left out of it, so
-a pass that dies half way leaves the vault behind rather than wrong. That is
-the promise the embedding catch-up already makes.
+**A pass is in two halves, and this is the part that is not obvious.** The
+embedding catch-up is safe on a worker thread because it is handed *copies* of
+the index and the store and gives back a new store — nothing shared, nothing to
+race. A sync writes *files*, and the filesystem is shared with the save tick: a
+pull landing on a note the user edited two seconds ago would overwrite it, and
+the server's stale-write check is no help because it guards the server's copy,
+not this one.
 
-`cargo run --example sync_check -- <url> <token>` proves it against a real
-server: two vaults standing in for two machines, push, pull, a double edit
-becoming a conflict copy, and the original untouched.
+So `sync::gather` does the network and reads local files but writes none, on
+the worker; and `sync::apply` does every local write on the thread that owns
+the notebook and therefore knows which note is open and whether it is dirty. A
+pull aimed at the note being typed on becomes a conflict copy instead — the
+same judgement the external-change banner already makes, reached the same way.
+A rename or a delete aimed at it is left for a later pass.
 
-Still to do:
+Within `apply` the order is renames, writes, deletions. Renames first because
+everything after refers to notes by their new ids; deletions last because a
+deletion is the only step the next pass cannot undo, so a failure earlier
+leaves the note in place rather than gone. **The base returned is what happened,
+not what was planned** — every failed transfer is left out, so a pass that dies
+half way leaves the vault behind rather than wrong.
 
-- **The pass on `Notebook`**, on a timer and a worker thread, the way the
-  embedding catch-up runs — including reloading the open note if a pull
-  changed it underneath, which is the existing `absorb_external_changes` path
-  and should reuse it rather than grow a second one.
-
-  **This is not the same shape as the catch-up and should not be written as
-  if it were.** The embedding pass is safe on a worker thread because it is
-  handed *copies* of the index and the store and gives back a new store —
-  nothing shared, so nothing to race. A sync pass writes files, and the
-  filesystem is shared with the save tick. A pull landing on a note the user
-  edited two seconds ago would overwrite it, and the stale-write check does
-  not help: it guards the server's copy, not this one.
-
-  So the pass needs, at least: a flush and save before it starts; the open
-  note excluded from pulls while it is dirty, or the pull turned into a
-  conflict copy the way a genuine divergence is; and `absorb_external_changes`
-  run afterwards, which the watcher will trigger regardless. Working that out
-  properly is the remaining job, and it is the reason this was not rushed to
-  a finish — it is the one place in the plan where getting it wrong loses a
-  note rather than costing time.
-- **The conflict UI**: one `AdwBanner` string and one sidebar filter mode, per
-  the notes below.
-- **The configuration**: a URL and a token, entered on purpose. Unlike the
-  vector store, this one holds the notes themselves, so it must never be
-  something Brain goes looking for by default.
+`./sync-check.sh` runs the whole thing locally against a throwaway server.
 
 Vault on the NAS as real Markdown files in a container, git-backed for history,
 readable by familiar and by `cat`. The service exposes per-note content hashes,

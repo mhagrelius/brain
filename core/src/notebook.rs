@@ -29,6 +29,7 @@ use crate::markdown;
 use crate::note::{Note, NoteId};
 use crate::search;
 use crate::semantic;
+use crate::sync;
 use crate::tree::{self, Listed, Row, Sort};
 use crate::vault::{Vault, VaultError};
 
@@ -159,6 +160,10 @@ pub enum Alert {
     /// The open note's file is gone from the vault. It is still in the editor,
     /// and [`Notebook::restore_open_note`] writes it back.
     Vanished(NoteId),
+    /// A sync found notes both sides had edited, and wrote the other side's
+    /// version beside each. Nothing is lost and nothing is waiting — lowest
+    /// priority for exactly that reason.
+    Conflicts(usize),
 }
 
 /// What [`Notebook::attach_files`] managed.
@@ -217,6 +222,8 @@ pub struct Notebook {
     not_saving: Option<String>,
     diverged: Option<NoteId>,
     vanished: Option<NoteId>,
+    /// Conflict copies the last sync wrote, until they are looked at.
+    conflicts: usize,
 }
 
 impl Notebook {
@@ -347,7 +354,15 @@ impl Notebook {
         if let Some(id) = &self.diverged {
             return Some(Alert::Diverged(id.clone()));
         }
-        self.vanished.clone().map(Alert::Vanished)
+        if let Some(id) = &self.vanished {
+            return Some(Alert::Vanished(id.clone()));
+        }
+        (self.conflicts > 0).then_some(Alert::Conflicts(self.conflicts))
+    }
+
+    /// Stop reporting the conflict copies — they have been looked at.
+    pub fn dismiss_conflicts(&mut self) {
+        self.conflicts = 0;
     }
 
     fn clear_alerts(&mut self) {
@@ -362,6 +377,13 @@ impl Notebook {
         match self.alert() {
             Some(Alert::Diverged(_)) => self.take_disk_version(),
             Some(Alert::Vanished(_)) => self.restore_open_note(),
+            // The copies are already in the vault and in the sidebar. The
+            // button only takes you to them, which the shell does; here it is
+            // enough to stop saying so.
+            Some(Alert::Conflicts(_)) => {
+                self.dismiss_conflicts();
+                true
+            }
             Some(Alert::NotSaving(_)) | None => false,
         }
     }
@@ -475,6 +497,66 @@ impl Notebook {
         let token = self.config.vectors_token.clone()?;
         let (url, token) = (url.trim().to_string(), token.trim().to_string());
         (!url.is_empty() && !token.is_empty()).then_some((url, token))
+    }
+
+    // ---- syncing ----
+
+    /// Where the vault server is, and its token — or `None`, which is the
+    /// default and stays the default until someone types both in.
+    ///
+    /// Unlike the shared vector store, this one holds the notes themselves, so
+    /// there is no sensible thing for Brain to go looking for on its own.
+    pub fn sync_server(&self) -> Option<(String, String)> {
+        let url = self.config.sync_url.clone()?;
+        let token = self.config.sync_token.clone()?;
+        let (url, token) = (url.trim().to_string(), token.trim().to_string());
+        (!url.is_empty() && !token.is_empty()).then_some((url, token))
+    }
+
+    /// What the network half of a pass needs: a vault to read and the base the
+    /// last pass agreed on.
+    ///
+    /// The vault is cloned because it is only a root path, and the base is read
+    /// off disk here so the worker touches nothing shared.
+    pub fn sync_input(&self) -> Option<(Vault, sync::Snapshot)> {
+        let vault = self.vault.clone()?;
+        let base = sync::load_base(&sync::default_base_path(vault.root()));
+        Some((vault, base))
+    }
+
+    /// Apply what a pass gathered. **Every local write in a sync happens here**,
+    /// on the thread that owns this notebook.
+    ///
+    /// The open note is protected while it has unsaved edits: a pull aimed at
+    /// it becomes a conflict copy instead, because the version in the editor is
+    /// one nobody else has and overwriting it would lose the only copy. That is
+    /// the same judgement [`External::Diverged`] makes.
+    pub fn absorb_sync(
+        &mut self,
+        incoming: sync::Incoming,
+        from: &str,
+        date: &str,
+    ) -> sync::Report {
+        let Some(vault) = self.vault.clone() else {
+            return sync::Report::default();
+        };
+        let protect = self.dirty.then(|| self.open.clone()).flatten();
+        let (agreed, report) = sync::apply(&vault, incoming, protect.as_ref(), from, date);
+
+        // Before anything else: a base that failed to write means the next pass
+        // redoes this one, which is slow and safe. The other order — vault
+        // changed, base lost — would be neither.
+        let _ = sync::save_base(&agreed, &sync::default_base_path(vault.root()));
+
+        if !report.is_quiet() {
+            self.rescan();
+            self.conflicts += report.conflicted;
+            // The pass wrote files, so the open note may have moved under the
+            // editor. This is the same path the watcher takes, and reusing it
+            // is what stops there being two answers to one question.
+            self.absorb_external_changes();
+        }
+        report
     }
 
     /// The index and store a catch-up pass should run against.

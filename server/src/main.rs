@@ -71,7 +71,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    println!("brain-vectors: listening on {address}");
+    println!("brain-server: listening on {address}");
 
     for incoming in listener.incoming() {
         let Ok(stream) = incoming else {

@@ -455,6 +455,117 @@ fn a_save_failure_outranks_a_divergence() {
     std::fs::set_permissions(dir.path(), writable).expect("chmod back");
 }
 
+// ---- absorbing a sync ----
+
+/// Everything a pass gathered, as if a server had sent it.
+fn incoming(land: &[(&str, &str)], delete: &[&str]) -> brain_core::sync::Incoming {
+    brain_core::sync::Incoming {
+        land: land
+            .iter()
+            .map(|(path, text)| brain_core::sync::Landing {
+                id: id(path),
+                text: (*text).to_string(),
+                conflict_with: None,
+            })
+            .collect(),
+        delete: delete.iter().map(|path| id(path)).collect(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_pull_lands_and_the_index_sees_it() {
+    let (dir, mut notebook) = notebook(&[]);
+
+    let report = notebook.absorb_sync(incoming(&[("A.md", "from elsewhere")], &[]), "phone", "d");
+
+    assert_eq!(report.pulled, 1);
+    assert_eq!(read(dir.path(), "A.md"), "from elsewhere");
+    // Rescanned, so it is searchable without waiting for the watcher.
+    assert_eq!(notebook.listed_notes().len(), 1);
+}
+
+#[test]
+fn a_pull_never_overwrites_the_note_being_typed_on() {
+    let (dir, mut notebook) = notebook(&[("Open.md", "saved text")]);
+    notebook.load_note(&id("Open.md")).expect("open");
+    notebook.flush("what I am typing");
+    assert!(notebook.is_dirty());
+
+    // A pull aimed straight at it — an ordinary one, not planned as a conflict.
+    let report = notebook.absorb_sync(
+        incoming(&[("Open.md", "what they wrote")], &[]),
+        "phone",
+        "d",
+    );
+
+    // The editor holds a version nobody else has. It is not thrown away; the
+    // other side's lands beside it instead.
+    assert_eq!(report.conflicted, 1);
+    assert_eq!(report.pulled, 0);
+    assert_eq!(
+        notebook.open_note_text().map(|(_, text)| text),
+        Some("what I am typing".to_string())
+    );
+    assert_eq!(
+        read(dir.path(), "Open (conflict d from phone).md"),
+        "what they wrote"
+    );
+    assert!(notebook.is_dirty(), "the unsaved edit was dropped");
+}
+
+#[test]
+fn the_note_being_typed_on_is_not_deleted_by_a_sync() {
+    let (dir, mut notebook) = notebook(&[("Open.md", "text")]);
+    notebook.load_note(&id("Open.md")).expect("open");
+    notebook.flush("unsaved work");
+
+    let report = notebook.absorb_sync(incoming(&[], &["Open.md"]), "phone", "d");
+
+    assert_eq!(report.deleted_here, 0);
+    assert!(dir.path().join("Open.md").exists());
+}
+
+#[test]
+fn conflicts_reach_the_banner_and_can_be_dismissed() {
+    let (_dir, mut notebook) = notebook(&[("A.md", "mine")]);
+    notebook.load_note(&id("A.md")).expect("open");
+    notebook.flush("mine, edited");
+
+    notebook.absorb_sync(incoming(&[("A.md", "theirs")], &[]), "phone", "d");
+
+    assert_eq!(notebook.alert(), Some(Alert::Conflicts(1)));
+    // Lowest priority: nothing is waiting and nothing is lost, so anything
+    // else wrong outranks it.
+    notebook.dismiss_conflicts();
+    assert_eq!(notebook.alert(), None);
+}
+
+#[test]
+fn a_sync_that_did_nothing_does_not_rescan_or_say_anything() {
+    let (_dir, mut notebook) = notebook(&[("A.md", "text")]);
+
+    let report = notebook.absorb_sync(incoming(&[], &[]), "phone", "d");
+
+    assert!(report.is_quiet());
+    assert_eq!(notebook.alert(), None);
+}
+
+#[test]
+fn half_a_sync_server_configuration_is_none_at_all() {
+    let (_dir, mut notebook) = notebook(&[]);
+
+    assert_eq!(notebook.sync_server(), None);
+    notebook.config_mut().sync_url = Some("http://nas:8082".into());
+    assert_eq!(notebook.sync_server(), None, "a URL alone was honoured");
+
+    notebook.config_mut().sync_token = Some("a-token".into());
+    assert_eq!(
+        notebook.sync_server(),
+        Some(("http://nas:8082".to_string(), "a-token".to_string()))
+    );
+}
+
 // ---- what the sidebar asks for ----
 
 #[test]

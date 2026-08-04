@@ -18,6 +18,7 @@ See `PLAN.md` for where this is going: the split exists so a second shell on ano
 - `cargo run --example icons_check` — asserts every icon name resolves. An unresolved one draws a missing-image glyph and warns about nothing, so add new names to `USED`.
 - `./install.sh` — release build, installs under `~/.local`. `./uninstall.sh` reverses it.
 - `packaging/build-flatpak.sh` and `packaging/build-deb.sh` — distribution artifacts.
+- `./sync-check.sh` — starts a throwaway `brain-server`, drives it with the real client, and takes it down. The only check that catches a client and a server which are each self-consistent and disagree. Not part of `test.sh`, because it wants a port and a build of both.
 - `server/` is `brain-server`: the shared vector store, and the vault as real Markdown files. `podman build -f server/Containerfile -t brain-server .` from the repo root — the context must be the workspace, since it depends on `brain-core` by path. It needs `BRAIN_VECTORS_TOKEN` (32 characters or more) and refuses to start without one. **`notes::path_of` is the only thing between a note id off the network and the server's filesystem** — it allows rather than forbids, and its test table is the specification.
 
 ## Layout
@@ -31,6 +32,8 @@ See `PLAN.md` for where this is going: the split exists so a second shell on ano
 **Push logic down into `brain-core`.** A rule that lives there is tested by `cargo test` with no display; the same rule inside a widget is only reachable through the GTK harness. The sidebar's tree is the worked example — `core/src/tree.rs` decides what the rows are, and the widget only draws them.
 
 **The embedder stayed in the shell on purpose.** `semantic::Embedder` is a trait in the core; `src/ui/embedder.rs` is libsoup's answer to it. Keeping the transport out of the core is what stops GLib being dragged onto a platform that has no use for it — anything new that opens a socket goes on the shell side of that trait too. `semantic::Shared` and `src/ui/shared_vectors.rs` are the same pattern for the shared vector store.
+
+**A sync pass is two halves and they run on different threads.** `sync::gather` does the network and reads local files but writes none, on the worker; `sync::apply` does every local write on the thread that owns the notebook. This is not the catch-up's shape and must not be rewritten into it — the catch-up is handed copies and gives back a new store, while a sync writes files the save tick is also writing. New sync behaviour goes on whichever side matches: reads and network in `gather`, writes in `apply`.
 
 **Wire formats are pinned on both sides.** The client and `brain-vectors` define the same JSON in two crates that never see each other's types, so each has a test asserting the exact bytes. Change one and the other's test fails, which is the only warning there is.
 

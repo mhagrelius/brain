@@ -46,6 +46,20 @@ const TICK: Duration = Duration::from_secs(2);
 /// waiting for the result.
 const CATCH_UP_DELAY: Duration = Duration::from_secs(5);
 
+/// How often the vault is compared with the server's.
+///
+/// A minute, not a second. Nothing on screen waits for a pass, the local vault
+/// is authoritative between them, and a laptop that talks to a NAS every second
+/// is a laptop with its fans on. The watcher still notices anything a pass
+/// writes immediately, so the delay is only in noticing another *machine*.
+const SYNC_EVERY: Duration = Duration::from_secs(60);
+
+/// What conflict copies are named, and therefore what finds them again.
+///
+/// The sidebar's search is the filter — `conflict_id` puts this in every copy's
+/// title, so narrowing to it is one `set_query` and no new UI at all.
+const CONFLICT_MARK: &str = "(conflict ";
+
 mod imp {
     use super::*;
 
@@ -64,6 +78,10 @@ mod imp {
         pub catching_up: Cell<bool>,
         pub restack: Cell<bool>,
         pub catchup_tick: RefCell<Option<glib::SourceId>>,
+        /// A sync pass is out on a worker thread. A second one beside it would
+        /// plan against the same base and do everything twice.
+        pub syncing: Cell<bool>,
+        pub sync_tick: RefCell<Option<glib::SourceId>>,
     }
 
     #[glib::object_subclass]
@@ -88,6 +106,7 @@ mod imp {
             obj.install_actions();
             obj.load_config();
             obj.start_tick();
+            obj.start_syncing();
         }
 
         fn activate(&self) {
@@ -169,6 +188,9 @@ mod imp {
             obj.remember_window();
             obj.save_config();
             if let Some(tick) = self.tick.take() {
+                tick.remove();
+            }
+            if let Some(tick) = self.sync_tick.take() {
                 tick.remove();
             }
             self.watcher.replace(None);
@@ -452,11 +474,30 @@ impl BrainApplication {
                 )),
                 Some("Restore"),
             ),
+            Some(Alert::Conflicts(count)) => window.set_banner(
+                Some(&match count {
+                    1 => "1 note was edited in two places — both versions are here".to_string(),
+                    count => {
+                        format!("{count} notes were edited in two places — both versions are here")
+                    }
+                }),
+                Some("Show"),
+            ),
         }
     }
 
     /// Take the banner up on what it is offering.
     pub fn resolve_alert(&self) {
+        // Conflicts are the one alert whose action is navigation rather than a
+        // change to the vault, so it is handled here rather than by the
+        // notebook.
+        if matches!(
+            self.imp().notebook.borrow().alert(),
+            Some(Alert::Conflicts(_))
+        ) {
+            self.show_conflicts();
+            return;
+        }
         if self.imp().notebook.borrow_mut().resolve_alert() {
             self.refresh_notes();
             self.show_open_note();
@@ -614,6 +655,110 @@ impl BrainApplication {
                 }
             }
         ));
+    }
+
+    // ---- syncing ----
+
+    /// Start the sync timer. Does nothing useful until a server is configured,
+    /// and asks for nothing until then either.
+    fn start_syncing(&self) {
+        let source = glib::timeout_add_local(
+            SYNC_EVERY,
+            clone!(
+                #[weak(rename_to = app)]
+                self,
+                #[upgrade_or]
+                glib::ControlFlow::Break,
+                move || {
+                    app.sync_now();
+                    glib::ControlFlow::Continue
+                }
+            ),
+        );
+        self.imp().sync_tick.replace(Some(source));
+    }
+
+    /// Run one pass: the network half on a worker thread, every local write
+    /// back here.
+    ///
+    /// **This is deliberately not the catch-up's shape.** That one is safe off
+    /// the main loop because it is handed copies and gives back a new store. A
+    /// sync writes *files*, and the filesystem is shared with the save tick —
+    /// so the worker gets `sync::gather`, which only reads, and `absorb_sync`
+    /// does every write here, where the open note and its dirty flag are known.
+    pub fn sync_now(&self) {
+        let imp = self.imp();
+        if imp.syncing.get() {
+            return;
+        }
+        // The worker reads the vault off disk, so what is in the editor has to
+        // be on disk first or the pass would push a version behind the one on
+        // screen. It converges either way; this saves a round of it.
+        self.flush_open_note();
+        self.save_now();
+
+        let (url, token, vault, base) = {
+            let notebook = imp.notebook.borrow();
+            let Some((url, token)) = notebook.sync_server() else {
+                return; // no server configured, which is the default
+            };
+            let Some((vault, base)) = notebook.sync_input() else {
+                return; // no vault
+            };
+            (url, token, vault, base)
+        };
+        let (from, date) = (machine_name(), today());
+        imp.syncing.set(true);
+
+        glib::spawn_future_local(clone!(
+            #[weak(rename_to = app)]
+            self,
+            async move {
+                let gathering = {
+                    let (from, date) = (from.clone(), date.clone());
+                    gtk::gio::spawn_blocking(move || {
+                        let server = crate::ui::VaultServer::new(&url, &token);
+                        crate::model::sync::gather(&vault, &base, &server, &from, &date)
+                    })
+                    .await
+                };
+
+                app.imp().syncing.set(false);
+                // A server that is not there is not an error the user needs a
+                // dialog about: the vault is authoritative here, and the next
+                // pass tries again.
+                let Ok(Ok(incoming)) = gathering else {
+                    return;
+                };
+                let report = app
+                    .imp()
+                    .notebook
+                    .borrow_mut()
+                    .absorb_sync(incoming, &from, &date);
+                if report.is_quiet() {
+                    return;
+                }
+                app.refresh_notes();
+                app.show_open_note();
+                app.reselect();
+                app.refresh_banner();
+                app.schedule_catch_up();
+            }
+        ));
+    }
+
+    /// Show the conflict copies the last pass wrote.
+    ///
+    /// They are notes, so the sidebar already lists them; narrowing to them is
+    /// the search that is already there, aimed at the mark every copy's title
+    /// carries.
+    fn show_conflicts(&self) {
+        self.imp().notebook.borrow_mut().dismiss_conflicts();
+        self.set_query(CONFLICT_MARK);
+        if let Some(window) = self.window() {
+            window.show_search(CONFLICT_MARK);
+        }
+        self.refresh_banner();
     }
 
     /// The vectors as they stand, for tests and for callers that want to search
@@ -1170,4 +1315,29 @@ impl BrainApplication {
             window.toast(message);
         }
     }
+}
+
+/// What a conflict copy says it came from.
+///
+/// The machine's own name, because the only person reading it knows which of
+/// their machines is which and no identifier Brain invented would mean
+/// anything to them.
+fn machine_name() -> String {
+    let name = glib::host_name().to_string();
+    // Filenames, so nothing that would make one awkward. A hostname with a
+    // slash in it is not a hostname, but the vault is the thing that pays for
+    // being wrong about that.
+    let cleaned: String = name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    if cleaned.is_empty() {
+        "another machine".to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn today() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
 }

@@ -319,37 +319,166 @@ pub fn snapshot_of(vault: &Vault) -> Snapshot {
         .collect()
 }
 
-/// Run one pass: plan it, apply it, and return the base for the next one.
+/// One note the server sent, and where it should land here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Landing {
+    /// Where to write it. For a conflict this is the copy, never the original.
+    pub id: NoteId,
+    pub text: String,
+    /// The note this is the other side's version of, when it is a conflict
+    /// copy. `None` for an ordinary pull.
+    pub conflict_with: Option<NoteId>,
+}
+
+/// What one pass got off the network, ready to be written locally.
 ///
-/// **The base returned is what actually happened, not what was planned.** Every
-/// transfer that failed is left out of it, so the next pass sees that note as
-/// still needing work — a pass that dies half way through leaves the vault
-/// behind rather than wrong, which is the promise the embedding catch-up makes
-/// too.
+/// The whole point of this type is that producing it touches no local file.
+/// See [`gather`].
+#[derive(Debug, Clone, Default)]
+pub struct Incoming {
+    /// Notes to write here, ordinary pulls and conflict copies alike.
+    pub land: Vec<Landing>,
+    pub rename: Vec<(NoteId, NoteId)>,
+    pub delete: Vec<NoteId>,
+    /// The base as the network half left it: what was pushed and what was
+    /// deleted there. [`apply`] adds what the local half manages.
+    pub agreed: Snapshot,
+    /// What the network half already did.
+    pub report: Report,
+}
+
+/// The network half of a pass. **Reads local files; writes none.**
 ///
-/// The order is renames, then pulls, then pushes, then deletions. Renames go
-/// first because everything after them refers to notes by their new ids;
-/// deletions go last because a deletion is the only step that cannot be undone
-/// by the next pass, and doing it after everything else means a failure
-/// earlier leaves the note in place rather than gone.
-pub fn run(
+/// This split is the whole reason a sync is safe on a worker thread, and it is
+/// not the shape it first looks like it should be. The embedding catch-up can
+/// do its work off the main loop because it is handed copies and gives back a
+/// new store — nothing shared, nothing to race. A sync writes *files*, and the
+/// filesystem is shared with the save tick: a pull landing on a note the user
+/// edited two seconds ago would overwrite it, and the server's stale-write
+/// check is no help because it guards the server's copy, not this one.
+///
+/// So the worker does this, which only ever reads, and every local write
+/// happens in [`apply`] on the thread that owns the notebook and therefore
+/// knows which note is open and whether it is dirty.
+///
+/// A push sending text that has changed since the snapshot is not a problem:
+/// the base records what the server took, so the next pass sees local differ
+/// from it and pushes again. It converges, and no version is lost on the way.
+pub fn gather(
     vault: &Vault,
     base: &Snapshot,
     remote: &dyn Remote,
     from: &str,
     date: &str,
-) -> Result<(Snapshot, Report), SyncError> {
+) -> Result<Incoming, SyncError> {
     let local = snapshot_of(vault);
     let there = remote.list()?;
     let plan = plan(base, &local, &there, from, date);
 
-    let mut agreed = base.clone();
-    let mut report = Report::default();
+    let mut incoming = Incoming {
+        agreed: base.clone(),
+        ..Incoming::default()
+    };
 
-    for (old, new) in &plan.rename_local {
+    // Renames are carried, not applied: `fs::rename` is a write.
+    incoming.rename = plan.rename_local.clone();
+    incoming.delete = plan.delete_local.clone();
+
+    // Conflicts are fetched like anything else. Where they land is what
+    // differs, and that is [`Landing`]'s job.
+    let landing: BTreeMap<&NoteId, &NoteId> = plan
+        .conflicts
+        .iter()
+        .map(|conflict| (&conflict.id, &conflict.copy))
+        .collect();
+    let pulling: Vec<NoteId> = plan
+        .pull
+        .iter()
+        .cloned()
+        .chain(plan.conflicts.iter().map(|conflict| conflict.id.clone()))
+        .collect();
+
+    for (id, text) in remote.get(&pulling)? {
+        let copy = landing.get(&id).copied();
+        incoming.land.push(Landing {
+            id: copy.cloned().unwrap_or_else(|| id.clone()),
+            text,
+            conflict_with: copy.map(|_| id),
+        });
+    }
+
+    for id in &plan.push {
+        let Some(text) = read_text(vault, id) else {
+            incoming.report.failed += 1;
+            continue;
+        };
+        match remote.put(id, &text, base.get(id).copied()) {
+            Put::Done(hash) => {
+                incoming.agreed.insert(id.clone(), hash);
+                incoming.report.pushed += 1;
+            }
+            // Somebody wrote between the listing and this. Not an error and
+            // not a conflict yet — the next pass lists again and sees it.
+            Put::Stale(_) | Put::Failed(_) => incoming.report.failed += 1,
+        }
+    }
+
+    // Deletions last, because a deletion is the only step the next pass cannot
+    // undo: a failure before this point leaves the note in place rather than
+    // gone.
+    for id in &plan.delete_remote {
+        match remote.delete(id, base.get(id).copied()) {
+            Put::Done(_) => {
+                incoming.agreed.remove(id);
+                incoming.report.deleted_there += 1;
+            }
+            Put::Stale(_) | Put::Failed(_) => incoming.report.failed += 1,
+        }
+    }
+
+    Ok(incoming)
+}
+
+/// The filesystem half. **Every local write in a sync happens here**, on the
+/// thread that owns the notebook.
+///
+/// `protect` is the open note when it has unsaved edits. A pull aimed at it is
+/// turned into a conflict copy rather than applied, because the version in the
+/// editor is one nobody has seen yet and overwriting it would lose the only
+/// copy. That is the same judgement the external-change banner makes, reached
+/// the same way, and it is why this cannot run on the worker: the worker does
+/// not know what is open.
+///
+/// **The base returned is what actually happened, not what was planned.** Every
+/// write that failed is left out, so the next pass sees that note as still
+/// needing work — a pass that dies half way leaves the vault behind rather than
+/// wrong.
+///
+/// Renames go first, because everything after refers to notes by their new ids.
+pub fn apply(
+    vault: &Vault,
+    incoming: Incoming,
+    protect: Option<&NoteId>,
+    from: &str,
+    date: &str,
+) -> (Snapshot, Report) {
+    let Incoming {
+        land,
+        rename,
+        delete,
+        mut agreed,
+        mut report,
+    } = incoming;
+
+    for (old, new) in &rename {
+        // Renaming the note being typed on would move the file out from under
+        // the save tick. Left for a later pass, when it is saved.
+        if protect == Some(old) {
+            continue;
+        }
+        let hash = read_text(vault, old).map(|text| Hash::of(&text));
         match vault.rename(old, new) {
             Ok(()) => {
-                let hash = local.get(old).copied();
                 agreed.remove(old);
                 if let Some(hash) = hash {
                     agreed.insert(new.clone(), hash);
@@ -360,58 +489,37 @@ pub fn run(
         }
     }
 
-    // Conflicts are pulled like anything else, but into a note beside the
-    // original rather than over it. The local version is never touched.
-    let pulling: Vec<NoteId> = plan
-        .pull
-        .iter()
-        .cloned()
-        .chain(plan.conflicts.iter().map(|conflict| conflict.id.clone()))
-        .collect();
-    let fetched = remote.get(&pulling)?;
-    let landing: BTreeMap<&NoteId, &NoteId> = plan
-        .conflicts
-        .iter()
-        .map(|conflict| (&conflict.id, &conflict.copy))
-        .collect();
-
-    for (id, text) in &fetched {
-        let conflicted = landing.get(id).copied();
-        let target = conflicted.unwrap_or(id);
-        if write_text(vault, target, text).is_err() {
-            report.failed += 1;
-            continue;
-        }
-        match conflicted {
-            // The copy is a new note of its own. The original is still what it
-            // was here, so the base for it stays where it was — the next pass
-            // will see both sides changed again and, because the texts now
-            // differ from the base in the same way, plan the push.
-            Some(_) => report.conflicted += 1,
-            None => {
-                agreed.insert(id.clone(), Hash::of(text));
-                report.pulled += 1;
-            }
-        }
-    }
-
-    for id in &plan.push {
-        let Some(text) = read_text(vault, id) else {
-            report.failed += 1;
-            continue;
+    for landing in land {
+        // The one thing the worker could not decide.
+        let redirected = landing.conflict_with.is_none() && protect == Some(&landing.id);
+        let (target, conflicted) = if redirected {
+            (conflict_id(&landing.id, from, date), true)
+        } else {
+            (landing.id.clone(), landing.conflict_with.is_some())
         };
-        match remote.put(id, &text, base.get(id).copied()) {
-            Put::Done(hash) => {
-                agreed.insert(id.clone(), hash);
-                report.pushed += 1;
-            }
-            // Somebody wrote between the listing and this. Not an error and
-            // not a conflict yet — the next pass lists again and sees it.
-            Put::Stale(_) | Put::Failed(_) => report.failed += 1,
+
+        if write_text(vault, &target, &landing.text).is_err() {
+            report.failed += 1;
+            continue;
+        }
+        if conflicted {
+            // The copy is a note of its own. The base for the original stays
+            // where it was, so the next pass sees both sides changed and plans
+            // the push that settles it.
+            report.conflicted += 1;
+        } else {
+            agreed.insert(target, Hash::of(&landing.text));
+            report.pulled += 1;
         }
     }
 
-    for id in &plan.delete_local {
+    for id in &delete {
+        // Deleting the note being typed on is the one deletion worth refusing
+        // outright: the editor holds a version nobody else has, and the
+        // vanished-note banner already covers saying so.
+        if protect == Some(id) {
+            continue;
+        }
         match vault.delete(id) {
             Ok(()) => {
                 agreed.remove(id);
@@ -421,17 +529,20 @@ pub fn run(
         }
     }
 
-    for id in &plan.delete_remote {
-        match remote.delete(id, base.get(id).copied()) {
-            Put::Done(_) => {
-                agreed.remove(id);
-                report.deleted_there += 1;
-            }
-            Put::Stale(_) | Put::Failed(_) => report.failed += 1,
-        }
-    }
+    (agreed, report)
+}
 
-    Ok((agreed, report))
+/// Both halves in one call, with nothing protected. For tests and for
+/// `examples/sync_check`; the application uses [`gather`] and [`apply`].
+pub fn run(
+    vault: &Vault,
+    base: &Snapshot,
+    remote: &dyn Remote,
+    from: &str,
+    date: &str,
+) -> Result<(Snapshot, Report), SyncError> {
+    let incoming = gather(vault, base, remote, from, date)?;
+    Ok(apply(vault, incoming, None, from, date))
 }
 
 fn read_text(vault: &Vault, id: &NoteId) -> Option<String> {
@@ -884,6 +995,137 @@ mod tests {
             assert!(directory.join("B.md").exists(), "{directory:?} lost B");
         }
         assert_eq!(there_base.len(), 2);
+    }
+
+    // ---- what the worker cannot decide ----
+
+    #[test]
+    fn a_pull_aimed_at_the_note_being_typed_on_becomes_a_copy_instead() {
+        let (dir, vault) = vault(&[("Open.md", "what I am typing")]);
+        let server = Server::with(&[("Open.md", "what they wrote")]);
+        // The base matches the server, so this is an ordinary pull as far as
+        // the planner is concerned — nothing about it looks like a conflict.
+        let base: Snapshot = [(id("Open.md"), Hash::of("what I am typing"))]
+            .into_iter()
+            .collect();
+
+        let incoming = gather(&vault, &base, &server, "phone", "2026-08-04").expect("gather");
+        assert_eq!(incoming.land.len(), 1);
+        assert!(
+            incoming.land[0].conflict_with.is_none(),
+            "planned as a pull"
+        );
+
+        // The main thread knows the note is open with unsaved edits, which is
+        // the one thing the worker could not know.
+        let (_, report) = apply(
+            &vault,
+            incoming,
+            Some(&id("Open.md")),
+            "phone",
+            "2026-08-04",
+        );
+
+        assert_eq!(report.conflicted, 1);
+        assert_eq!(report.pulled, 0);
+        // The editor's version is the only copy of itself. It is still there.
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("Open.md")).expect("read"),
+            "what I am typing"
+        );
+        assert!(dir
+            .path()
+            .join("Open (conflict 2026-08-04 from phone).md")
+            .exists());
+    }
+
+    #[test]
+    fn the_note_being_typed_on_is_not_deleted_underneath_the_editor() {
+        let (dir, vault) = vault(&[("Open.md", "unsaved work")]);
+        let server = Server::default();
+        let base: Snapshot = [(id("Open.md"), Hash::of("unsaved work"))]
+            .into_iter()
+            .collect();
+
+        let incoming = gather(&vault, &base, &server, "phone", "2026-08-04").expect("gather");
+        assert_eq!(incoming.delete, vec![id("Open.md")]);
+
+        let (agreed, report) = apply(
+            &vault,
+            incoming,
+            Some(&id("Open.md")),
+            "phone",
+            "2026-08-04",
+        );
+
+        assert_eq!(report.deleted_here, 0);
+        assert!(dir.path().join("Open.md").exists());
+        // Still in the base, so a later pass — once it is saved, or closed —
+        // picks the deletion up again rather than forgetting it.
+        assert!(agreed.contains_key(&id("Open.md")));
+    }
+
+    #[test]
+    fn the_note_being_typed_on_is_not_renamed_out_from_under_the_save_tick() {
+        let (dir, vault) = vault(&[("Open.md", "text")]);
+        let server = Server::with(&[("Renamed.md", "text")]);
+        let base: Snapshot = [(id("Open.md"), Hash::of("text"))].into_iter().collect();
+
+        let incoming = gather(&vault, &base, &server, "phone", "2026-08-04").expect("gather");
+        assert_eq!(incoming.rename, vec![(id("Open.md"), id("Renamed.md"))]);
+
+        let (_, report) = apply(
+            &vault,
+            incoming,
+            Some(&id("Open.md")),
+            "phone",
+            "2026-08-04",
+        );
+
+        assert_eq!(report.renamed, 0);
+        assert!(dir.path().join("Open.md").exists());
+        assert!(!dir.path().join("Renamed.md").exists());
+    }
+
+    #[test]
+    fn gathering_writes_no_local_file() {
+        // The property the whole split exists for: everything `gather` does is
+        // safe to do on a worker thread beside a running save tick.
+        let (dir, vault) = vault(&[("Mine.md", "mine")]);
+        let server = Server::with(&[("Theirs.md", "theirs"), ("Gone.md", "gone")]);
+        let base: Snapshot = [(id("Gone.md"), Hash::of("gone"))].into_iter().collect();
+
+        let before = snapshot_of(&vault);
+        let incoming = gather(&vault, &base, &server, "phone", "2026-08-04").expect("gather");
+
+        assert_eq!(snapshot_of(&vault), before, "gather touched the vault");
+        assert!(!dir.path().join("Theirs.md").exists());
+        // It did do the network half, though — that is the point.
+        assert_eq!(incoming.report.pushed, 1);
+        assert_eq!(incoming.land.len(), 1);
+    }
+
+    #[test]
+    fn a_conflict_still_lands_when_a_different_note_is_open() {
+        // Protecting the open note must not stop anything else happening.
+        let (dir, vault) = vault(&[("A.md", "mine"), ("Open.md", "typing")]);
+        let server = Server::with(&[("A.md", "theirs")]);
+        let base: Snapshot = [(id("A.md"), Hash::of("before"))].into_iter().collect();
+
+        let incoming = gather(&vault, &base, &server, "phone", "2026-08-04").expect("gather");
+        let (_, report) = apply(
+            &vault,
+            incoming,
+            Some(&id("Open.md")),
+            "phone",
+            "2026-08-04",
+        );
+
+        assert_eq!(report.conflicted, 1);
+        assert!(dir
+            .path()
+            .join("A (conflict 2026-08-04 from phone).md")
+            .exists());
     }
 
     #[test]

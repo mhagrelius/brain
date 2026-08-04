@@ -666,6 +666,48 @@ Where the finished thing differs from this document, this is what happened.
   testable parsing. That is the same argument that kept YAML out of the
   frontmatter and CommonMark out of the scanner. If it ever needs keep-alive,
   chunked bodies or TLS it should take a real server rather than grow one.
+- **Sync arrived, and the vault is still the product.** "No sync — somebody
+  else's problem, and the file-per-note format means somebody else can solve
+  them" held until the question was a phone. Syncthing and git do not solve
+  iOS, and a shared filesystem does not solve it either: it relocates the
+  problem, because a file share does not arbitrate and two clients writing one
+  note clobber each other silently.
+
+  So the server *stores and arbitrates* and the clients keep full local
+  replicas. The vault on the NAS is real Markdown in a folder — whatever backs
+  up that volume backs up the notes, `git init` gives history, and familiar
+  reads the same directory. Nothing about Brain's architecture changes: the
+  scan is still local and instant, the index is still in memory, editing still
+  works with the network off.
+
+  What `DESIGN.md` got right in advance is the shape of the pass. "Nothing
+  subscribes to anything… a sync client rewriting fifty files while the app was
+  closed [is] the same input to that function" was written about the embedding
+  catch-up, and the sync planner is the same pure function over three
+  snapshots rather than two — local against base says whether *this* machine
+  changed something, remote against base says whether another one did.
+
+  **The two halves run on different threads, and that is the one thing the
+  catch-up's shape does not survive.** The catch-up is safe off the main loop
+  because it is handed copies and gives back a new store. A sync writes files,
+  and the filesystem is shared with the save tick — a pull landing on a note
+  edited two seconds ago would overwrite it, and the server's stale-write
+  check guards its copy, not this one. `sync::gather` therefore reads and
+  talks to the network; `sync::apply` does every local write on the thread
+  that knows which note is open and whether it is dirty, and turns a pull
+  aimed at that note into a conflict copy.
+
+  **A conflict is a note, not a dialog.** It survives Brain being closed or
+  uninstalled, which a dialog answer does not; it appears in the sidebar
+  because the sidebar is the directory tree; and it is resolved by opening
+  both and deleting the loser, which already carries undo. Two things are
+  rules rather than questions: a deletion never wins over an edit, and a
+  rename and an edit compose — a rename is told apart from a delete-plus-create
+  the way `semantic::plan` tells a move apart, by content hash.
+
+  The awareness UI is one `AdwBanner` string and one sidebar filter, and the
+  filter is the search entry that was already there aimed at the mark every
+  copy's title carries. No new pane, no new list.
 
 ## Settled
 
