@@ -131,6 +131,22 @@ Still to do:
   embedding catch-up runs — including reloading the open note if a pull
   changed it underneath, which is the existing `absorb_external_changes` path
   and should reuse it rather than grow a second one.
+
+  **This is not the same shape as the catch-up and should not be written as
+  if it were.** The embedding pass is safe on a worker thread because it is
+  handed *copies* of the index and the store and gives back a new store —
+  nothing shared, so nothing to race. A sync pass writes files, and the
+  filesystem is shared with the save tick. A pull landing on a note the user
+  edited two seconds ago would overwrite it, and the stale-write check does
+  not help: it guards the server's copy, not this one.
+
+  So the pass needs, at least: a flush and save before it starts; the open
+  note excluded from pulls while it is dirty, or the pull turned into a
+  conflict copy the way a genuine divergence is; and `absorb_external_changes`
+  run afterwards, which the watcher will trigger regardless. Working that out
+  properly is the remaining job, and it is the reason this was not rushed to
+  a finish — it is the one place in the plan where getting it wrong loses a
+  note rather than costing time.
 - **The conflict UI**: one `AdwBanner` string and one sidebar filter mode, per
   the notes below.
 - **The configuration**: a URL and a token, entered on purpose. Unlike the
