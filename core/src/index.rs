@@ -17,8 +17,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use crate::model::markdown;
-use crate::model::note::{Note, NoteId};
+use crate::markdown;
+use crate::note::{Note, NoteId};
 
 /// What a `[[link]]` points at.
 #[derive(Debug, Clone, PartialEq, Eq)]

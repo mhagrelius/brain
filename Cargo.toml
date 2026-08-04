@@ -1,3 +1,6 @@
+[workspace]
+members = ["core"]
+
 [package]
 name = "brain"
 version = "0.1.0"
@@ -15,18 +18,16 @@ name = "brain"
 path = "src/lib.rs"
 
 [dependencies]
-# The Markdown scanner, which Brain used to carry in-tree. It moved out when
-# Stickies' copy and this one had drifted into two maintenance burdens for one
-# parser; Familiar reads it through the re-export below. No dependencies and
-# nothing in it draws, so it costs nothing here.
-quill = { git = "https://github.com/mhagrelius/quill", rev = "e28603237916589af22314acbb098849fd5da8fa" }
+# The vault, the notes, the index and the search. Links no UI toolkit, so it is
+# the half that a shell on another platform would keep. Re-exported from
+# src/lib.rs as `brain::model`, which is the path every call site here uses.
+brain-core = { path = "core" }
 gtk = { package = "gtk4", version = "0.11", features = ["v4_22"] }
 adw = { package = "libadwaita", version = "0.9", features = ["v1_9"] }
 # Direct dependency purely to raise the API level above what gtk4 pulls in:
 # ApplicationCommandLine::print_literal is gated behind v2_80, and the vault
 # directory monitors want the v2_80 GFileMonitor signal shape.
 gio = { version = "0.22", features = ["v2_80"] }
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The platform's HTTP client, for the one thing Brain talks to over a socket:
 # a local llama.cpp server that turns notes into vectors. It ships in
@@ -37,17 +38,17 @@ serde_json = "1"
 # the embedding work is a batch that runs behind the app, not a stream the user
 # is watching, and a synchronous seam is what lets `model::semantic` be tested
 # with a fake instead of a server.
+#
+# This is why the embedder stayed in the shell when the model moved to
+# brain-core: `semantic::Embedder` is a trait, and libsoup is one platform's
+# answer to it. A macOS shell would hand the same trait URLSession rather than
+# drag GLib along behind it.
 soup = { package = "soup3", version = "0.9" }
-# Dates in frontmatter (created/updated) and timestamped attachment names.
+# Timestamped attachment names. Frontmatter dates are brain-core's problem.
 chrono = { version = "0.4", default-features = false, features = [
     "std",
     "clock",
-    "serde",
 ] }
-# No Markdown crate: see DESIGN.md. The scanner must report which characters are
-# *syntax* so they can be hidden, in char offsets, which is not what a general
-# CommonMark library gives you. src/model/markdown/ is Stickies' scanner,
-# extended.
 
 [dev-dependencies]
 adw = { package = "libadwaita", version = "0.9", features = ["v1_9"] }

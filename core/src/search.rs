@@ -8,10 +8,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::model::bm25::{self, Bm25};
-use crate::model::index::Index;
-use crate::model::note::NoteId;
-use crate::model::semantic::Store;
+use crate::bm25::{self, Bm25};
+use crate::index::Index;
+use crate::note::NoteId;
+use crate::semantic::Store;
 
 /// A note matched by name, ranked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -365,7 +365,7 @@ fn score(candidate: &str, query: &str) -> Option<(i32, Vec<usize>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::note::Note;
+    use crate::note::Note;
 
     fn index(notes: &[(&str, &str)]) -> Index {
         let notes: Vec<Note> = notes
@@ -497,7 +497,7 @@ mod tests {
     // works is a test nobody runs. The end-to-end check against a real model
     // lives in `examples/semantic_check.rs`.
 
-    use crate::model::semantic::{Digest, Store};
+    use crate::semantic::{Digest, Store};
 
     /// A store where each note is given a vector directly.
     fn vectors(notes: &[(&str, [f32; 2])]) -> Store {

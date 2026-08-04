@@ -577,6 +577,20 @@ Where the finished thing differs from this document, this is what happened.
 - **`examples/preview.rs` grows the window until something is drawn.**
   `WidgetPaintable` declines to draw a scroller whose content overflows it, so
   a fixed height per picture had to be re-guessed every time the seed note grew.
+- **`model/` became its own crate.** The architecture above draws one `src/`
+  with two halves in it; they are now two crates in a workspace, `brain-core`
+  (`core/`) and `brain` (the GTK shell). Nothing moved between the halves and
+  no behaviour changed — `src/lib.rs` re-exports the core as `brain::model`, so
+  every call site reads as it did, the same trick the core plays with `quill`.
+  What the split buys is a compiler-enforced version of the rule the directory
+  names only asked for politely: `brain-core` cannot depend on GTK because it
+  does not depend on GTK, and a widget type that drifts into the core is now an
+  unresolved import rather than a code review. It also settled a question that
+  the directory layout had left open — `model/` turned out to link no GLib at
+  all, so the core is portable Rust rather than GLib-flavoured Rust, and
+  `ui/embedder.rs` stayed in the shell as libsoup's implementation of the
+  `semantic::Embedder` trait rather than moving down with the rest. See
+  `PLAN.md` for what the split is for.
 
 ## Settled
 

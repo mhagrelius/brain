@@ -12,7 +12,7 @@
 //! BM25 itself is twenty lines of arithmetic over counts Brain already has in
 //! memory. What FTS5 would buy over this is a posting list, which matters at a
 //! million documents and not at a personal vault's few thousand — the same
-//! argument [`crate::model::search`] already makes about scanning.
+//! argument [`crate::search`] already makes about scanning.
 //!
 //! # What it ranks
 //!
@@ -24,13 +24,13 @@
 //!
 //! The title is worth [`TITLE_WEIGHT`] occurrences in the body, so a note
 //! *called* "Rust ownership" outranks one that mentions it in passing — the
-//! same judgement [`crate::model::search::by_text`] makes with a sort key, made
+//! same judgement [`crate::search::by_text`] makes with a sort key, made
 //! here with a score so it can be fused with a semantic ranking.
 
 use std::collections::HashMap;
 
-use crate::model::index::Index;
-use crate::model::note::NoteId;
+use crate::index::Index;
+use crate::note::NoteId;
 
 /// Term-frequency saturation. 1.2 is the standard starting point and there is
 /// no corpus here to tune it against.
@@ -74,7 +74,7 @@ pub fn tokenize(text: &str) -> Vec<String> {
 ///
 /// Excluded as *evidence*, not from the index: they still count towards a
 /// note's length, and Brain still has a literal substring search
-/// ([`crate::model::search::by_text`]) for the rare occasion someone means the
+/// ([`crate::search::by_text`]) for the rare occasion someone means the
 /// word itself. English only, which is what this vault is in; a word list is
 /// the one part of a search engine that cannot be derived from the corpus it is
 /// searching.
@@ -250,7 +250,7 @@ impl Bm25 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::note::Note;
+    use crate::note::Note;
 
     fn index(notes: &[(&str, &str)]) -> Index {
         let notes: Vec<Note> = notes

@@ -16,7 +16,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::model::note::{Note, NoteId};
+use crate::note::{Note, NoteId};
 
 /// Where notes are found and what is ignored.
 const EXTENSION: &str = "md";
@@ -310,7 +310,7 @@ impl Vault {
         if from.is_empty() {
             return Err(VaultError::NotInVault(self.root.clone()));
         }
-        if crate::model::tree::is_within(from, to) {
+        if crate::tree::is_within(from, to) {
             return Err(VaultError::IntoItself(from.to_string()));
         }
         let target = self.folder_path(to);

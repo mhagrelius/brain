@@ -14,18 +14,31 @@ export GTK_A11Y=none
 export GSETTINGS_BACKEND=memory
 export RUST_BACKTRACE=1
 
-# Widget tests need a display; the model tests do not, and are the bulk.
-run=(cargo test --all-targets)
+# Widget tests need a display; the core's tests do not, and are the bulk.
+# --workspace so brain-core is tested too: without it, cargo tests only the
+# root package and the half of the suite that needs no display never runs.
+run=(cargo test --workspace --all-targets)
 if [[ "${1:-}" == "--headless" ]]; then
   command -v xvfb-run >/dev/null || { echo "install xvfb first" >&2; exit 1; }
-  run=(xvfb-run -a dbus-run-session -- cargo test --all-targets)
+
+  # The private bus activates its own xdg-document-portal, which mounts a FUSE
+  # fs at $XDG_RUNTIME_DIR/doc. Inheriting the login session's runtime dir means
+  # that mount lands on /run/user/$UID/doc, on top of the real portal's; the real
+  # one exits 21 and every flatpak launch fails until it is restarted. Hand the
+  # session a throwaway runtime dir so its portals stay inside it.
+  runtime_dir="$(mktemp -d)"
+  chmod 700 "$runtime_dir"
+  trap 'rc=$?; fusermount3 -u "$runtime_dir/doc" 2>/dev/null || :; rm -rf "$runtime_dir"; exit $rc' EXIT
+  export XDG_RUNTIME_DIR="$runtime_dir"
+
+  run=(xvfb-run -a dbus-run-session -- cargo test --workspace --all-targets)
 fi
 
 echo "==> cargo fmt --check"
 cargo fmt --check
 
 echo "==> cargo clippy"
-cargo clippy --all-targets -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 
 echo "==> ${run[*]}"
 "${run[@]}"

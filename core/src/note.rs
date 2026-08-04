@@ -3,8 +3,8 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::model::frontmatter::{self, Frontmatter};
-use crate::model::markdown;
+use crate::frontmatter::{self, Frontmatter};
+use crate::markdown;
 
 /// A note's identity: its path relative to the vault root, with `/` separators.
 ///

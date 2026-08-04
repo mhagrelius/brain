@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::model::note::NoteId;
+use crate::note::NoteId;
 
 /// How notes are ordered inside a folder.
 ///

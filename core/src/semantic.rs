@@ -35,8 +35,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::index::Index;
-use crate::model::note::NoteId;
+use crate::index::Index;
+use crate::note::NoteId;
 
 /// How much text goes into one vector.
 ///
@@ -847,7 +847,7 @@ mod tests {
 
     // ---- catching up, with a model that is not a model ----
 
-    use crate::model::note::Note;
+    use crate::note::Note;
     use std::cell::RefCell;
 
     /// An embedder that needs no server: each text becomes a vector of its own
