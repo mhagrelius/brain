@@ -8,10 +8,31 @@
 # which is why this one is in git and that one is not.
 
 services:
+  # Fixes the data folder's ownership, then exits.
+  #
+  # The server runs as uid 10001, and the kernel checks that against the bind
+  # mount's owner — so without this the container starts, answers /health, and
+  # fails every write. Doing it here rather than telling you to `chown` over
+  # SSH keeps the project self-contained: Container Manager can create the
+  # folder itself and everything else follows.
+  #
+  # It runs as root and the main service does not, which is the point. It
+  # finishes in milliseconds and shows as "exited" afterwards, which is
+  # correct rather than a fault.
+  brain-server-init:
+    image: busybox:latest
+    user: "0:0"
+    command: sh -c "mkdir -p /data && chown -R 10001:10001 /data"
+    volumes:
+      - ${BRAIN_SERVER_DATA:-/volume1/docker/brain-server/data}:/data
+
   brain-server:
     image: ${BRAIN_SERVER_IMAGE:?set BRAIN_SERVER_IMAGE in .env to the tag deploy-server.sh pushed}
     container_name: brain-server
     restart: unless-stopped
+    depends_on:
+      brain-server-init:
+        condition: service_completed_successfully
 
     # Matches the uid baked into the image. The bind mount below is checked
     # against it by the kernel, so `chown -R 10001:10001` on the host folder is
@@ -32,7 +53,7 @@ services:
       # backed up by whatever backs up /volume1, browsable in File Station, and
       # `git init` inside its `vault/` gives you history for free. A named
       # volume buries all of that under /volume1/@docker.
-      - ${BRAIN_SERVER_DATA:-/volume1/docker/brain-server}:/var/lib/brain-vectors
+      - ${BRAIN_SERVER_DATA:-/volume1/docker/brain-server/data}:/var/lib/brain-vectors
 
     ports:
       # BRAIN_BIND decides who can reach this. Default is every interface,
