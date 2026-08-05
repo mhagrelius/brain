@@ -4,19 +4,18 @@ The vault and its vectors, shared between one person's machines. This is what
 to do once, in order. It assumes DSM 7.2 or later with Container Manager, an
 x86_64 model, and a registry the NAS can already pull from.
 
-## 1. The folder, and the one command that is not optional
+## 1. The folders
 
-Over SSH on the NAS:
+`/volume1/docker/brain-server/` holds the compose file; `data/` inside it is
+the bind mount. Make both in File Station — Create → Create folder — before
+anything else, because **Synology's Docker refuses to create a missing
+bind-mount source directory** where vanilla Docker would make it. The error is
+`Bind mount failed: … does not exist` and the project will not start.
 
-```sh
-sudo mkdir -p /volume1/docker/brain-server
-sudo chown -R 10001:10001 /volume1/docker/brain-server
-```
-
-**The uid has to match.** The image runs as 10001 and the kernel checks that
-against the bind mount's owner. Skip this and you get the worst kind of
-failure: the container starts, `/health` answers, Container Manager shows it
-green, and every write fails. If notes are not appearing, check this first.
+No `chown` is needed, and attempting one is a trap: see the `user: "0:0"` note
+in `docker-compose.yml`. On a Synology the container runs as root because
+`/volume1`'s ACLs override POSIX ownership, so a chown to a non-root uid
+reports success and the writes still fail.
 
 ## 2. Push the image
 
@@ -66,17 +65,23 @@ GUI's browse-and-download tab rather than what a Project can pull.
 
 ## 3. The project
 
-Copy `server/docker-compose.yml` and `server/.env.example` into
-`/volume1/docker/brain-server-project/` on the NAS, rename the second to
-`.env`, and fill it in. Generate the token with `openssl rand -hex 32`; the
-server refuses to start on anything under 32 characters.
+Container Manager → **Project** → **Create**, name `brain-server`, path
+`/volume1/docker/brain-server`, source **Upload docker-compose.yml**, and give
+it `server/docker-compose.yml`.
 
-Then Container Manager → **Project** → **Create**, path
-`/volume1/docker/brain-server-project`, and let it read the compose file.
+**Upload it; do not paste it.** Container Manager's compose editor auto-indents
+— it carries the previous line's indentation forward and adds yours to it — so
+typed YAML is mangled within a few lines. The `YAML Configurations` tab on an
+existing project is read-only, including when stopped, so changes go the same
+way: overwrite `compose.yaml` in the project folder via File Station and Build
+again. Container Manager stores it as `compose.yaml` whatever you called it.
 
-Note the data folder and the project folder are different: the compose file and
-the token live in the second, the notes in the first. Putting the token inside
-the folder that gets synced would be its own kind of mistake.
+Put `.env` beside it with the token — `openssl rand -hex 32`; the server
+refuses to start on anything under 32 characters — or inline the values in the
+compose file if that is easier than getting a dotfile onto the NAS.
+
+The compose file and the token sit at the project root, outside `data/`, so
+they are never visible from inside the container.
 
 ## 4. Reaching it
 

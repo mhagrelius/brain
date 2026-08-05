@@ -1,44 +1,35 @@
 # brain-server, for Synology Container Manager.
 #
 # Container Manager → Project → Create, point it at the folder holding this
-# file and the `.env` beside it. See server/README.md for the whole path,
-# including the one `chown` that has to happen first.
+# file and the `.env` beside it. See server/README.md for the whole path.
+#
+# **Do not type this into Container Manager's compose editor.** It auto-indents
+# and will mangle the YAML. Upload the file instead — see the README.
 #
 # Values come from `.env` in the same folder. Nothing secret is in this file,
 # which is why this one is in git and that one is not.
 
 services:
-  # Fixes the data folder's ownership, then exits.
-  #
-  # The server runs as uid 10001, and the kernel checks that against the bind
-  # mount's owner — so without this the container starts, answers /health, and
-  # fails every write. Doing it here rather than telling you to `chown` over
-  # SSH keeps the project self-contained: Container Manager can create the
-  # folder itself and everything else follows.
-  #
-  # It runs as root and the main service does not, which is the point. It
-  # finishes in milliseconds and shows as "exited" afterwards, which is
-  # correct rather than a fault.
-  brain-server-init:
-    image: busybox:latest
-    user: "0:0"
-    command: sh -c "mkdir -p /data && chown -R 10001:10001 /data"
-    volumes:
-      - ${BRAIN_SERVER_DATA:-/volume1/docker/brain-server/data}:/data
-
   brain-server:
     image: ${BRAIN_SERVER_IMAGE:?set BRAIN_SERVER_IMAGE in .env to the tag deploy-server.sh pushed}
     container_name: brain-server
     restart: unless-stopped
-    depends_on:
-      brain-server-init:
-        condition: service_completed_successfully
 
-    # Matches the uid baked into the image. The bind mount below is checked
-    # against it by the kernel, so `chown -R 10001:10001` on the host folder is
-    # not optional — without it the container starts, answers /health, and
-    # fails every write.
-    user: "10001:10001"
+    # Root, and this was arrived at the hard way.
+    #
+    # The image runs as uid 10001 and that is right on an ordinary Docker host,
+    # where a `chown` on the bind mount is all it takes. It does not work on a
+    # Synology: `/volume1` carries Synology's own ACLs, which override POSIX
+    # ownership, and a container uid that is not a DSM user cannot be granted
+    # write access through them. The chown reports success, the container comes
+    # up, and every write fails with EACCES — which is exactly what happened,
+    # and why every other container on that NAS runs as root too.
+    #
+    # What is lost is smaller than it looks. `read_only` below means the only
+    # thing this process can write is the volume, whoever it is; the process
+    # opens one port and reads one directory. Take this line out on a host with
+    # ordinary POSIX permissions and `chown -R 10001:10001` the data folder.
+    user: "0:0"
 
     environment:
       # No default on purpose: compose refuses to start without it rather than
@@ -53,6 +44,9 @@ services:
       # backed up by whatever backs up /volume1, browsable in File Station, and
       # `git init` inside its `vault/` gives you history for free. A named
       # volume buries all of that under /volume1/@docker.
+      #
+      # **It has to exist already.** Synology's Docker refuses to create a
+      # missing bind-mount source directory where vanilla Docker would make it.
       - ${BRAIN_SERVER_DATA:-/volume1/docker/brain-server/data}:/var/lib/brain-vectors
 
     ports:
@@ -66,6 +60,7 @@ services:
       - "${BRAIN_BIND:-0.0.0.0}:8082:8082"
 
     # Everything it writes goes in the volume above — verified, not assumed.
+    # This is the hardening that survives running as root.
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -80,10 +75,5 @@ services:
       start_period: 5s
       retries: 3
 
-    logging:
-      # It logs a line at startup and one per failed write. Without a cap that
-      # is still a file that only grows.
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    # No `logging:` block. Naming a driver here makes Container Manager's Log
+    # tab show nothing at all, and that tab is unreliable enough already.

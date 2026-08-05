@@ -48,7 +48,11 @@ fn main() {
     check("machine one pushed its note", report.pushed == 1);
 
     let (two_base, report) = pass(&two, &Snapshot::new(), &server);
-    check("machine two pulled it", report.pulled == 1);
+    // At least one, not exactly one: a server that already holds notes is the
+    // normal case for a real deployment, and the first pass pulls all of them.
+    // Asserting an exact count here made this fail against a working server,
+    // which is the wrong way round for a check.
+    check("machine two pulled it", report.pulled >= 1);
     check(
         "and it landed as a real file with the right text",
         text_at(two_dir.path().join(&name)).as_deref() == Some("written on machine one"),
