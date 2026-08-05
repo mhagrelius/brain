@@ -166,6 +166,35 @@ pub enum Alert {
     Conflicts(usize),
 }
 
+/// Everything the sync status view needs, gathered in one call.
+///
+/// A view rather than live state: the shell asks for it when someone opens the
+/// dialog, and formats every part of it. "3 minutes ago" is a sentence, and
+/// sentences are the shell's.
+#[derive(Debug, Clone, Default)]
+pub struct SyncStatus {
+    /// Where the vault server is, or `None` when syncing is off — which is the
+    /// default and the honest thing to say first.
+    pub server: Option<String>,
+    pub vault: Option<PathBuf>,
+    /// Notes in the vault on this machine, right now.
+    pub notes_here: usize,
+    /// Notes this machine and the server last agreed on. Behind `notes_here`
+    /// means there is work the next pass will do.
+    pub notes_agreed: usize,
+    /// When the last pass finished, whether or not it did anything.
+    pub last_pass: Option<std::time::SystemTime>,
+    /// What the last pass that *did* something did.
+    pub last_change: Option<sync::Report>,
+    /// Why the last pass did not finish. Not an error state — the vault is
+    /// authoritative and the next pass tries again — but worth showing,
+    /// because a token that is wrong fails quietly for ever otherwise.
+    pub last_error: Option<String>,
+    /// Notes with vectors, and where they come from.
+    pub vectors: usize,
+    pub embedding_server: Option<String>,
+}
+
 /// What [`Notebook::attach_files`] managed.
 #[derive(Debug, Default, PartialEq)]
 pub struct Attached {
@@ -224,6 +253,13 @@ pub struct Notebook {
     vanished: Option<NoteId>,
     /// Conflict copies the last sync wrote, until they are looked at.
     conflicts: usize,
+    /// What the last sync pass did, for the status view. Not persisted: after
+    /// a restart the honest answer is "not since you opened it", and inventing
+    /// one from a file would be claiming knowledge of a pass this process
+    /// never saw.
+    last_pass: Option<std::time::SystemTime>,
+    last_change: Option<sync::Report>,
+    last_sync_error: Option<String>,
 }
 
 impl Notebook {
@@ -531,12 +567,47 @@ impl Notebook {
     /// it becomes a conflict copy instead, because the version in the editor is
     /// one nobody else has and overwriting it would lose the only copy. That is
     /// the same judgement [`External::Diverged`] makes.
+    /// What the status view shows. Read on demand; nothing here is cached.
+    ///
+    /// `default_embedding_url` is the shell's, for the same reason
+    /// [`Self::embedding_url`] takes one: which llama.cpp to assume is a
+    /// property of the platform, not of the vault.
+    pub fn sync_status(&self, default_embedding_url: &str) -> SyncStatus {
+        let base = self
+            .vault
+            .as_ref()
+            .map(|vault| sync::load_base(&sync::default_base_path(vault.root())))
+            .unwrap_or_default();
+        SyncStatus {
+            server: self.sync_server().map(|(url, _)| url),
+            vault: self.vault_root(),
+            notes_here: self.index.ids().count(),
+            notes_agreed: base.len(),
+            last_pass: self.last_pass,
+            last_change: self.last_change.clone(),
+            last_error: self.last_sync_error.clone(),
+            vectors: self.vectors.len(),
+            embedding_server: self.embedding_url(default_embedding_url),
+        }
+    }
+
+    /// A pass could not reach the server. Recorded rather than raised: the
+    /// vault is authoritative between passes, so this is information and not
+    /// an emergency — but a wrong token would otherwise fail silently for
+    /// ever, which is the thing worth being able to see.
+    pub fn record_sync_failure(&mut self, error: String) {
+        self.last_pass = Some(std::time::SystemTime::now());
+        self.last_sync_error = Some(error);
+    }
+
     pub fn absorb_sync(
         &mut self,
         incoming: sync::Incoming,
         from: &str,
         date: &str,
     ) -> sync::Report {
+        self.last_pass = Some(std::time::SystemTime::now());
+        self.last_sync_error = None;
         let Some(vault) = self.vault.clone() else {
             return sync::Report::default();
         };
@@ -549,6 +620,7 @@ impl Notebook {
         let _ = sync::save_base(&agreed, &sync::default_base_path(vault.root()));
 
         if !report.is_quiet() {
+            self.last_change = Some(report.clone());
             self.rescan();
             self.conflicts += report.conflicted;
             // The pass wrote files, so the open note may have moved under the

@@ -243,6 +243,31 @@ fn main() {
         );
     }
 
+    // The sync status dialog, which is the only place the server is visible at
+    // all — a pass says nothing while it is going well, so this is where you
+    // go to find out whether it is.
+    let status = BrainWindow::sync_status_content(
+        &[
+            ("Server".into(), "http://nas:8082".into()),
+            ("Notes here".into(), "128 notes".into()),
+            ("Synced".into(), "All 128".into()),
+            ("Last checked".into(), "just now".into()),
+            ("Last change".into(), "2 notes sent, 1 note received".into()),
+            (
+                "Vectors".into(),
+                "128 notes embedded, from http://nas:8081".into(),
+            ),
+            ("Vault".into(), "/home/matty/Documents".into()),
+        ],
+        "A pass runs every minute. Local edits are saved immediately either way.",
+    );
+    render(
+        &status,
+        460,
+        520,
+        &format!("{out}/sync-{}.png", scheme(dark)),
+    );
+
     // The window at first start: a vault with nothing in it yet.
     let fresh: BrainWindow = glib::Object::new();
     fresh.set_rows(&[]);

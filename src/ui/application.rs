@@ -727,8 +727,27 @@ impl BrainApplication {
                 // A server that is not there is not an error the user needs a
                 // dialog about: the vault is authoritative here, and the next
                 // pass tries again.
-                let Ok(Ok(incoming)) = gathering else {
-                    return;
+                let incoming = match gathering {
+                    Ok(Ok(incoming)) => incoming,
+                    // Recorded rather than shown. Nothing is wrong with the
+                    // vault, so there is nothing to interrupt anyone about —
+                    // but a token that is wrong would otherwise fail silently
+                    // for ever, and the status dialog is where you go to find
+                    // out that it has been.
+                    Ok(Err(error)) => {
+                        app.imp()
+                            .notebook
+                            .borrow_mut()
+                            .record_sync_failure(error.to_string());
+                        return;
+                    }
+                    Err(_) => {
+                        app.imp()
+                            .notebook
+                            .borrow_mut()
+                            .record_sync_failure("the pass could not be run".to_string());
+                        return;
+                    }
                 };
                 let report = app
                     .imp()
@@ -745,6 +764,100 @@ impl BrainApplication {
                 app.schedule_catch_up();
             }
         ));
+    }
+
+    /// Open the sync status dialog.
+    ///
+    /// Every sentence here is the shell's; the notebook reports numbers and
+    /// times. "3 minutes ago" and "Off — no server configured" are wording,
+    /// and a shell on another platform will word them differently.
+    pub fn show_sync_status(&self) {
+        let Some(window) = self.window() else {
+            return;
+        };
+        let status = self
+            .imp()
+            .notebook
+            .borrow()
+            .sync_status(crate::ui::DEFAULT_EMBEDDING_URL);
+
+        let mut rows: Vec<(String, String)> = Vec::new();
+
+        rows.push((
+            "Server".into(),
+            status
+                .server
+                .clone()
+                .unwrap_or_else(|| "Not set up — this vault stays on this machine".into()),
+        ));
+
+        rows.push((
+            "Notes here".into(),
+            match status.notes_here {
+                1 => "1 note".to_string(),
+                n => format!("{n} notes"),
+            },
+        ));
+
+        if status.server.is_some() {
+            // The number that answers "did it work": how many notes this
+            // machine and the server last agreed on. Behind the local count
+            // means there is work still to do rather than a failure.
+            rows.push((
+                "Synced".into(),
+                match (status.notes_agreed, status.notes_here) {
+                    (0, 0) => "Nothing to sync yet".to_string(),
+                    (0, _) => "Not yet — the first pass has not finished".to_string(),
+                    (agreed, here) if agreed == here => format!("All {here}"),
+                    (agreed, here) => format!("{agreed} of {here}, the rest on the next pass"),
+                },
+            ));
+
+            rows.push((
+                "Last checked".into(),
+                match (&status.last_error, status.last_pass) {
+                    (Some(error), _) => format!("Failed — {error}"),
+                    (None, Some(when)) => ago(when),
+                    (None, None) => "Not since Brain was opened".to_string(),
+                },
+            ));
+
+            if let Some(change) = &status.last_change {
+                rows.push(("Last change".into(), changes(change)));
+            }
+        }
+
+        rows.push((
+            "Vectors".into(),
+            match (status.vectors, &status.embedding_server) {
+                (0, None) => "Off — semantic search is lexical only".to_string(),
+                (0, Some(server)) => format!("None yet, from {server}"),
+                (n, Some(server)) => format!("{n} notes embedded, from {server}"),
+                (n, None) => format!("{n} notes embedded"),
+            },
+        ));
+
+        rows.push((
+            "Vault".into(),
+            status
+                .vault
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "No vault chosen".into()),
+        ));
+
+        let subtitle = match (&status.server, &status.last_error) {
+            (None, _) => "Syncing is off. Set sync_url and sync_token in the config file to \
+                          share this vault between machines."
+                .to_string(),
+            (Some(_), Some(_)) => "The vault on this machine is unaffected — it is the copy \
+                                   that counts, and the next pass will try again."
+                .to_string(),
+            (Some(_), None) => "A pass runs every minute. Local edits are saved immediately \
+                                either way."
+                .to_string(),
+        };
+
+        window.show_sync_status(&rows, &subtitle);
     }
 
     /// Show the conflict copies the last pass wrote.
@@ -1340,4 +1453,62 @@ fn machine_name() -> String {
 
 fn today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// How long ago something happened, in the roundest terms that are still true.
+///
+/// A pass runs every minute, so "just now" covers most of the answers and
+/// seconds would be a number that changes while you read it.
+fn ago(when: std::time::SystemTime) -> String {
+    let Ok(elapsed) = when.elapsed() else {
+        return "just now".to_string(); // the clock went backwards
+    };
+    let seconds = elapsed.as_secs();
+    match seconds {
+        0..=90 => "just now".to_string(),
+        91..=5400 => {
+            let minutes = (seconds + 30) / 60;
+            format!("{minutes} minutes ago")
+        }
+        _ => {
+            let hours = (seconds + 1800) / 3600;
+            match hours {
+                1 => "an hour ago".to_string(),
+                h => format!("{h} hours ago"),
+            }
+        }
+    }
+}
+
+/// What a pass did, as a phrase. Only the non-zero parts, because a pass that
+/// pushed one note should say so rather than reciting five zeroes.
+fn changes(report: &crate::model::sync::Report) -> String {
+    let mut parts = Vec::new();
+    let mut say = |n: usize, one: &str, many: &str| {
+        if n == 1 {
+            parts.push(format!("1 {one}"));
+        } else if n > 1 {
+            parts.push(format!("{n} {many}"));
+        }
+    };
+    say(report.pushed, "note sent", "notes sent");
+    say(report.pulled, "note received", "notes received");
+    say(report.renamed, "rename applied", "renames applied");
+    say(
+        report.deleted_here,
+        "note removed here",
+        "notes removed here",
+    );
+    say(
+        report.deleted_there,
+        "note removed there",
+        "notes removed there",
+    );
+    say(report.conflicted, "conflict", "conflicts");
+    say(report.failed, "transfer failed", "transfers failed");
+    if parts.is_empty() {
+        "Nothing to do".to_string()
+    } else {
+        parts.join(", ")
+    }
 }

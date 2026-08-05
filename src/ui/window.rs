@@ -270,6 +270,7 @@ impl BrainWindow {
         note_section.append(Some("New _Folder…"), Some("win.new-folder"));
         menu.append_section(None, &note_section);
         let vault_section = gtk::gio::Menu::new();
+        vault_section.append(Some("_Sync…"), Some("win.sync-status"));
         vault_section.append(Some("_Change Vault…"), Some("win.choose-vault"));
         vault_section.append(Some("_Reload from Disk"), Some("win.reload"));
         vault_section.append(Some("_Unused Attachments…"), Some("win.unused-attachments"));
@@ -684,6 +685,18 @@ impl BrainWindow {
             move |_, _| window.choose_vault()
         ));
         actions.add_action(&choose);
+
+        let sync_status = gtk::gio::SimpleAction::new("sync-status", None);
+        sync_status.connect_activate(clone!(
+            #[weak(rename_to = window)]
+            self,
+            move |_, _| {
+                if let Some(app) = window.brain_application() {
+                    app.show_sync_status();
+                }
+            }
+        ));
+        actions.add_action(&sync_status);
 
         let reload = gtk::gio::SimpleAction::new("reload", None);
         reload.connect_activate(clone!(
@@ -1282,6 +1295,51 @@ impl BrainWindow {
             .as_ref()
             .map(|title| title.subtitle().to_string())
             .unwrap_or_default()
+    }
+
+    /// Show what syncing has and has not done.
+    ///
+    /// Read-only, and a dialog rather than a pane: it answers a question you
+    /// ask occasionally — "is this actually working" — rather than one you
+    /// watch. A pass says nothing while it is going well, which is right for
+    /// something that runs every minute and wrong for something you cannot
+    /// check, so this is the place you check.
+    pub fn show_sync_status(&self, rows: &[(String, String)], subtitle: &str) {
+        let dialog = adw::Dialog::builder()
+            .title("Sync")
+            .content_width(460)
+            .child(&Self::sync_status_content(rows, subtitle))
+            .build();
+        dialog.present(Some(self));
+    }
+
+    /// The dialog's contents, on their own, so `examples/preview.rs` can render
+    /// them — a dialog needs presenting and an offscreen render has no window
+    /// to present onto.
+    pub fn sync_status_content(rows: &[(String, String)], subtitle: &str) -> adw::ToolbarView {
+        let group = adw::PreferencesGroup::new();
+        group.set_description(Some(subtitle));
+        for (title, value) in rows {
+            let row = adw::ActionRow::builder()
+                .title(title)
+                .subtitle(value)
+                // Nothing here is a control. Making the rows unfocusable stops
+                // the dialog opening with a highlight on a line of text.
+                .activatable(false)
+                .focusable(false)
+                .build();
+            // Paths and URLs are long and the interesting end is the right one.
+            row.set_subtitle_lines(0);
+            group.add(&row);
+        }
+
+        let page = adw::PreferencesPage::new();
+        page.add(&group);
+
+        let toolbar = adw::ToolbarView::new();
+        toolbar.add_top_bar(&adw::HeaderBar::new());
+        toolbar.set_content(Some(&page));
+        toolbar
     }
 
     /// Put a query in the sidebar's search entry and show the sidebar.
