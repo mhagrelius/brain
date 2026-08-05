@@ -22,7 +22,7 @@ reports success and the writes still fail.
 On the machine with the source:
 
 ```sh
-BRAIN_REGISTRY=your-nas:5000 ./packaging/deploy-server.sh
+BRAIN_REGISTRY=your-nas:5050 ./packaging/deploy-server.sh
 ```
 
 It runs `./test.sh`, builds, smoke-tests the image — serves `/health`, refuses
