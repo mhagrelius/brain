@@ -93,8 +93,10 @@ already encrypting — that is reasonable, and this says so explicitly:
 
     BRAIN_REGISTRY_INSECURE=1 BRAIN_REGISTRY=${BRAIN_REGISTRY} $0
 
-The NAS needs to agree: Container Manager → Registry → Settings, add
-${BRAIN_REGISTRY}, and tick the option for an insecure connection.
+The machine doing the *pulling* needs to accept HTTP too. If that is the same
+machine the registry runs on, it already does — Docker treats localhost as
+insecure by default — so referring to the image as localhost:PORT/brain-server
+in the compose file needs no configuration anywhere. See server/README.md.
 
 If it is reachable from anywhere else, put a certificate on it instead.
 EOF
@@ -112,7 +114,13 @@ Pushed:
     ${image}:latest
 
 On the NAS, in the Container Manager project's .env:
-    BRAIN_SERVER_IMAGE=${image}:${tag}
+    BRAIN_SERVER_IMAGE=localhost:${BRAIN_REGISTRY##*:}/brain-server:${tag}
+
+Note "localhost", not ${BRAIN_REGISTRY%%:*}. A registry stores repositories by
+name and not by hostname, so this is the same image you just pushed — and a
+registry reached over localhost is one Docker accepts on HTTP without being
+configured to. If the NAS pulled it by its own network name instead, its
+daemon would need an insecure-registries entry and a restart.
 
 Pinning the dated tag rather than :latest means a restart cannot quietly
 change what is holding your notes. See server/README.md.

@@ -34,13 +34,35 @@ an unauthenticated write — and only then pushes. It prints the tag to use. Add
 push is refused and the script tells you so rather than quietly downgrading:
 
 ```sh
-BRAIN_REGISTRY_INSECURE=1 BRAIN_REGISTRY=your-nas:5000 ./packaging/deploy-server.sh
+BRAIN_REGISTRY_INSECURE=1 BRAIN_REGISTRY=your-nas:5050 ./packaging/deploy-server.sh
 ```
 
-The NAS has to agree as well: Container Manager → **Registry** → **Settings**,
-add the address, and tick the insecure-connection option. That is a reasonable
-trade when the registry only answers on the tailnet. It is not one if it
-answers anywhere else — put a certificate on it instead.
+### Name the image `localhost` when the NAS pulls it
+
+The pulling machine has to accept HTTP as well, and this is where it is easy to
+do far more work than necessary.
+
+**A registry stores repositories by name, not by hostname.** An image pushed as
+`your-nas:5050/brain-server:tag` is the same repository as
+`localhost:5050/brain-server:tag`. And Docker treats a registry reached over
+localhost as insecure *by default*. So when the registry and the container both
+run on the NAS, writing
+
+```
+BRAIN_SERVER_IMAGE=localhost:5050/brain-server:2026-08-04
+```
+
+in `.env` pulls over HTTP with no configuration anywhere.
+
+Referring to it by the NAS's own network name instead means an
+`insecure-registries` entry in the daemon config — on Synology that is
+`/var/packages/ContainerManager/etc/dockerd.json`, editable only over SSH, and
+it needs the package restarted. There is no reason to do that here.
+
+Adding the registry under Container Manager → **Registry** → **Settings** does
+not help either way: that dialog offers only "Trust SSL Self-Signed
+Certificate" with no plain-HTTP option, and the list it maintains feeds the
+GUI's browse-and-download tab rather than what a Project can pull.
 
 ## 3. The project
 
