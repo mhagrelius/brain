@@ -4,3 +4,7 @@
 /.flatpak-build
 # Generated from Cargo.lock by packaging/build-flatpak.sh
 /packaging/flatpak/cargo-sources.json
+
+# Deployment secrets and local registry addresses.
+packaging/.env
+server/.env

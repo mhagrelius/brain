@@ -1,0 +1,68 @@
+# brain-server, for Synology Container Manager.
+#
+# Container Manager → Project → Create, point it at the folder holding this
+# file and the `.env` beside it. See server/README.md for the whole path,
+# including the one `chown` that has to happen first.
+#
+# Values come from `.env` in the same folder. Nothing secret is in this file,
+# which is why this one is in git and that one is not.
+
+services:
+  brain-server:
+    image: ${BRAIN_SERVER_IMAGE:?set BRAIN_SERVER_IMAGE in .env to the tag deploy-server.sh pushed}
+    container_name: brain-server
+    restart: unless-stopped
+
+    # Matches the uid baked into the image. The bind mount below is checked
+    # against it by the kernel, so `chown -R 10001:10001` on the host folder is
+    # not optional — without it the container starts, answers /health, and
+    # fails every write.
+    user: "10001:10001"
+
+    environment:
+      # No default on purpose: compose refuses to start without it rather than
+      # inventing one, which is the same posture the binary takes.
+      BRAIN_VECTORS_TOKEN: ${BRAIN_VECTORS_TOKEN:?set BRAIN_VECTORS_TOKEN in .env}
+      BRAIN_VECTORS_ADDR: 0.0.0.0:8082
+      BRAIN_VECTORS_DATA: /var/lib/brain-vectors
+
+    volumes:
+      # A bind mount rather than a named volume, deliberately. The whole point
+      # of the vault being files is that you can see them: this folder is
+      # backed up by whatever backs up /volume1, browsable in File Station, and
+      # `git init` inside its `vault/` gives you history for free. A named
+      # volume buries all of that under /volume1/@docker.
+      - ${BRAIN_SERVER_DATA:-/volume1/docker/brain-server}:/var/lib/brain-vectors
+
+    ports:
+      # BRAIN_BIND decides who can reach this. Default is every interface,
+      # which on a home LAN means every device on it — and the token then
+      # crosses that LAN in clear text, because this speaks plain HTTP.
+      #
+      # Set BRAIN_BIND to the NAS's Tailscale address in .env to make it
+      # reachable only over the tailnet, where WireGuard is doing the
+      # encrypting. That is the arrangement this was built for.
+      - "${BRAIN_BIND:-0.0.0.0}:8082:8082"
+
+    # Everything it writes goes in the volume above — verified, not assumed.
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      # The image carries no curl, so the binary asks itself. /health needs no
+      # token, which is what lets this work without handing the secret to
+      # Docker as well.
+      test: ["CMD", "/usr/local/bin/brain-server", "--health"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
+    logging:
+      # It logs a line at startup and one per failed write. Without a cap that
+      # is still a file that only grows.
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,26 @@
+# The build context is the workspace root, because the server depends on
+# brain-core by path and a context of `server/` alone cannot see it. That makes
+# this file matter more than it usually would: `target/` alone is eleven
+# gigabytes, and without this every build ships it to the daemon before the
+# first instruction runs.
+#
+# Read by both `docker build` and `podman build`.
+
+target/
+dist/
+.git/
+.github/
+
+# The GTK shell and everything that only it needs. The image builds
+# `--package brain-server`, which does not look at any of this.
+src/
+tests/
+examples/
+data/
+packaging/
+install.sh
+uninstall.sh
+test.sh
+sync-check.sh
+
+*.md
