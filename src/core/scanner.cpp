@@ -31,6 +31,12 @@ bool isFence(QStringView line) {
     return t.startsWith(u"```") || t.startsWith(u"~~~");
 }
 
+// `<!-- … -->` alone on a line: not prose, and not something to style as it.
+bool isComment(QStringView line) {
+    const QStringView t = line.trimmed();
+    return t.startsWith(u"<!--") && t.endsWith(u"-->") && t.size() >= 7;
+}
+
 // Exactly `---`, the frontmatter delimiter.
 bool isDelimiter(QStringView line) { return line.trimmed() == u"---" && !line.startsWith(u' '); }
 
@@ -89,6 +95,15 @@ bool atWordStart(QStringView line, int i) {
 }
 
 void inlineScan(QStringView line, int offset, Parsed &parsed);
+int tryInlineComment(QStringView line, int i, int offset, Parsed &parsed);
+// `<!-- … -->` inline: not prose, drawn recessed, never styled as prose.
+int tryInlineComment(QStringView line, int i, int offset, Parsed &parsed) {
+    if (!line.mid(i).startsWith(u"<!--")) return -1;
+    const int close = find(line, i + 4, u"-->");
+    if (close < 0) return -1;
+    parsed.pushSpan(offset + i, offset + close + 3, Style::Comment);
+    return close + 3;
+}
 
 void tableRow(QStringView chars, int offset, Parsed &parsed) {
     parsed.pushSpan(offset, offset + chars.size(), Style::TableRow);
@@ -274,6 +289,7 @@ void inlineScan(QStringView line, int offset, Parsed &parsed) {
     int i = 0;
     while (i < line.size()) {
         int next = tryCode(line, i, offset, parsed);
+        if (next < 0) next = tryInlineComment(line, i, offset, parsed);
         if (next < 0) next = tryEmbed(line, i, offset, parsed);
         if (next < 0) next = tryWikiLink(line, i, offset, parsed);
         if (next < 0) next = tryLink(line, i, offset, parsed);
@@ -315,6 +331,10 @@ LineState scanLine(QStringView chars, int offset, LineState state, bool first, s
         }
         if (isRule(chars)) {
             parsed.pushSpan(offset, offset + chars.size(), Style::Rule);
+            return LineState::Normal;
+        }
+        if (isComment(chars)) {
+            parsed.pushSpan(offset, offset + chars.size(), Style::Comment);
             return LineState::Normal;
         }
         if (isTableRow(chars) && next && isTableDelimiter(*next)) {
@@ -402,7 +422,7 @@ QString stripWith(const QString &text, const Parsed &parsed) {
     auto hide = [&](int from, int to) { for (int i = std::max(0, from); i < std::min(to, n); ++i) hidden[i] = true; };
     for (const Marker &m : parsed.markers) hide(m.start, m.end);
     for (const Span &s : parsed.spans)
-        if (s.style == Style::Frontmatter || s.style == Style::Rule || s.style == Style::TableDelimiter) hide(s.start, s.end);
+        if (s.style == Style::Frontmatter || s.style == Style::Rule || s.style == Style::TableDelimiter || s.style == Style::Comment) hide(s.start, s.end);
     int lineStart = 0;
     const QStringView all(text);
     while (lineStart < n) {

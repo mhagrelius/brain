@@ -13,7 +13,7 @@ Popover {
     onVisibleChanged: if (visible) { filter.text = ""; pick = 0; filter.forceActiveFocus() }
     Connections { target: App; function onChanged() { if (menu.pick >= menu.all.length) menu.pick = 0 } }
 
-    function apply(row) { App.applyInsert(row.label, 0, 0) }
+    function apply(row) { App.applyInsert(row.label) }
     function boldLabel(row) {
         var out = ""
         var pos = row.positions || []

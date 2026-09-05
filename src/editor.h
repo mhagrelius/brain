@@ -30,6 +30,7 @@ class Editor : public QObject {
     Q_PROPERTY(QQuickTextDocument *document READ document WRITE setDocument NOTIFY documentChanged)
     Q_PROPERTY(QQuickItem *textEdit READ textEdit WRITE setTextEdit NOTIFY documentChanged)
     Q_PROPERTY(bool reading READ reading WRITE setReading NOTIFY readingChanged)
+    Q_PROPERTY(bool focused READ focused WRITE setFocused NOTIFY readingChanged)
     Q_PROPERTY(QString source READ source NOTIFY sourceChanged)
     Q_PROPERTY(int wordCount READ wordCount NOTIFY sourceChanged)
     Q_PROPERTY(QVariantList decorations READ decorations NOTIFY displayChanged)
@@ -49,6 +50,8 @@ public:
     void setTextEdit(QQuickItem *item);
     bool reading() const { return m_reading; }
     void setReading(bool reading);
+    bool focused() const { return m_focused; }
+    void setFocused(bool focused);
     QString source() const { return m_source; }
     int wordCount() const;
     QVariantList decorations() const { return m_decorations; }
@@ -120,6 +123,7 @@ private:
     bool m_syncing = false;
     bool m_syncPending = false;
     bool m_reading = false;
+    bool m_focused = false;
     QVector<Snapshot> m_undo;
     QVector<Snapshot> m_redo;
     qint64 m_lastEditMs = 0;

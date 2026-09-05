@@ -27,6 +27,7 @@ QStringList styles(const QString &text) {
         case Style::TableRow: name = "row"; break;
         case Style::TableDelimiter: name = "delim"; break;
         case Style::Frontmatter: name = "fm"; break;
+        case Style::Comment: name = "comment"; break;
         }
         out.append(name + ":" + text.mid(s.start, s.end - s.start));
     }
@@ -92,6 +93,13 @@ private slots:
     void frontmatterOnlyAtTheTop() {
         QCOMPARE(styles("---\ntags: [a]\n---\nbody"), (QStringList{"fm:---", "fm:tags: [a]", "fm:---"}));
         QCOMPARE(styles("\n---\nx"), QStringList{"rule:---"});
+    }
+    void inlineCommentsAreRecessedNotProse() {
+        QCOMPARE(styles("text #tag <!-- fact --> after"), (QStringList{"tag:#tag", "comment:<!-- fact -->"}));
+    }
+    void htmlCommentsAreTheirOwnLine() {
+        QCOMPARE(styles("<!-- familiar fact 2026-08-06 -->"), QStringList{"comment:<!-- familiar fact 2026-08-06 -->"});
+        QCOMPARE(strip("a\n<!-- x -->\nb"), QStringLiteral("a\n\nb"));
     }
     void stripRemovesSyntaxAndBullets() {
         QCOMPARE(strip("# Shopping\n- **milk**\n| a | b |\n|---|---|\n"), QStringLiteral("Shopping\nmilk\n a b \n\n"));

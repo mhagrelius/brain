@@ -33,6 +33,7 @@ enum class Style {
     TableRow,      // pipes stay visible
     TableDelimiter,
     Frontmatter,
+    Comment,       // <!-- an HTML comment on a line of its own -->
 };
 
 struct Span {

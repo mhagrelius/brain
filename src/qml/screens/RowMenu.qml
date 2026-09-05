@@ -18,18 +18,21 @@ Item {
     }
     function close() { row = null }
 
+    // The actions close over a copy of the row: close() clears `row` before
+    // the action runs, so reading it there would throw.
     readonly property var options: {
-        if (!row) return []
-        if (row.kind === "folder") return [
-            {label: "New note here", act: function() { App.newNoteIn(row.path) }},
-            {label: "New folder inside", act: function() { App.newFolderIn(row.path) }},
-            {label: "Rename folder", act: function() { App.askRenameFolder(row.path) }},
-            {label: "Remove folder", danger: true, act: function() { App.askDeleteFolder(row.path) }}
+        var r = row
+        if (!r) return []
+        if (r.kind === "folder") return [
+            {label: "New note here", act: function() { App.newNoteIn(r.path) }},
+            {label: "New folder inside", act: function() { App.newFolderIn(r.path) }},
+            {label: "Rename folder", act: function() { App.askRenameFolder(r.path) }},
+            {label: "Remove folder", danger: true, act: function() { App.askDeleteFolder(r.path) }}
         ]
         return [
-            {label: "Open", act: function() { App.openNote(row.id) }},
-            {label: "Rename", act: function() { App.askRenameNote(row.id) }},
-            {label: "Delete", danger: true, act: function() { App.askDeleteNote(row.id) }}
+            {label: "Open", act: function() { App.openNote(r.id) }},
+            {label: "Rename", act: function() { App.askRenameNote(r.id) }},
+            {label: "Delete", danger: true, act: function() { App.askDeleteNote(r.id) }}
         ]
     }
 

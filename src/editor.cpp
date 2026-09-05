@@ -27,6 +27,15 @@ int openLinkStart(const QString &text, int cursor) {
     if (cursor - open < 2) return -1;
     const QString between = text.mid(open + 2, cursor - open - 2);
     if (between.contains(QStringLiteral("]]")) || between.contains(u'\n')) return -1;
+    // A link that is already closed is not being typed: the caret merely
+    // sits inside it. Look ahead on the line for the closer before any
+    // further opener.
+    int lineEnd = text.indexOf(u'\n', cursor);
+    if (lineEnd < 0) lineEnd = text.size();
+    const QString ahead = text.mid(cursor, lineEnd - cursor);
+    const int closer = ahead.indexOf(QStringLiteral("]]"));
+    const int opener = ahead.indexOf(QStringLiteral("[["));
+    if (closer >= 0 && (opener < 0 || closer < opener)) return -1;
     return open;
 }
 
@@ -58,6 +67,15 @@ void Editor::setTextEdit(QQuickItem *item) {
 void Editor::setReading(bool reading) {
     if (m_reading == reading) return;
     m_reading = reading;
+    emit readingChanged();
+    rebuild();
+}
+
+// Nothing is revealed until the editor is being typed in: a caret that was
+// merely placed at 0 on load should not bring the title's hashes back.
+void Editor::setFocused(bool focused) {
+    if (m_focused == focused) return;
+    m_focused = focused;
     emit readingChanged();
     rebuild();
 }
@@ -106,7 +124,7 @@ int Editor::displayOffset(int sourceOffset) const {
 QVector<Editor::Hidden> Editor::hiddenRanges() const {
     QVector<Hidden> out;
     for (const md::Marker &m : m_parsed.markers) {
-        if (!m_reading && m.revealedBy(m_caret)) continue;
+        if (!m_reading && m_focused && m.revealedBy(m_caret)) continue;
         // An embed's filename stays on show: the picture beneath names the
         // file, but a file that is missing, or not a picture, still has to
         // say what it is. Only the brackets hide.
@@ -222,6 +240,7 @@ void Editor::syncDocument(bool force) {
     const QString current = documentText();
     const bool changed = current != m_display;
     if (changed) {
+        if (qEnvironmentVariableIsSet("BRAIN_DEBUG_EDITOR")) qWarning() << "syncDocument patch: doc" << current.size() << "display" << m_display.size() << "hidden" << m_hidden.size() << "caret" << m_caret;
         int prefix = 0;
         const int max = std::min(current.size(), m_display.size());
         while (prefix < max && current[prefix] == m_display[prefix]) ++prefix;
@@ -246,6 +265,7 @@ void Editor::syncDocument(bool force) {
 }
 
 void Editor::rebuild(bool force) {
+    if (qEnvironmentVariableIsSet("BRAIN_DEBUG_EDITOR")) qWarning() << "rebuild force" << force << "caret" << m_caret << "focused" << m_focused;
     refreshHidden();
     recompute();
     syncDocument(force);
@@ -515,6 +535,7 @@ void Editor::applyFormat(const QString &label, int selectionStart, int selection
 
 QString Editor::linkAt(int displayPosition) const {
     const int sp = sourceOffset(displayPosition);
+    if (qEnvironmentVariableIsSet("BRAIN_DEBUG_EDITOR")) qWarning() << "linkAt display" << displayPosition << "src" << sp << "hidden" << m_hidden.size();
     for (const md::WikiLink &link : md::extractWith(m_source, m_parsed).links)
         if (sp >= link.start && sp <= link.end) return link.target;
     return QString();
@@ -657,10 +678,18 @@ void Editor::applyFormats() {
     monoDim.setFontPointSize(pt(12.5));
     monoDim.setForeground(role("dimmest"));
 
-    // Revealed markers: mono, dim.
+    // Revealed markers: mono, dim. On a heading line the hashes take the
+    // heading's size, so "# Title" reads as one line rather than a tick.
     for (const md::Marker &m : m_parsed.markers) {
-        if (m_reading || !m.revealedBy(m_caret)) continue;
-        range(displayOffset(m.start), displayOffset(m.end), monoDim);
+        if (m_reading || !m_focused || !m.revealedBy(m_caret)) continue;
+        QTextCharFormat f = monoDim;
+        for (const md::Span &s : m_parsed.spans) {
+            if (s.style != md::Style::Heading || s.start < m.end || s.start > m.end + 1) continue;
+            const qreal size = s.level == 1 ? 24 : s.level == 2 ? 18 : s.level == 3 ? 16 : 14.5;
+            f.setFontPointSize(pt(size));
+            f.setFontWeight(QFont::Bold);
+        }
+        range(displayOffset(m.start), displayOffset(m.end), f);
     }
 
     // Line-level styling and bullets.
@@ -729,14 +758,9 @@ void Editor::applyFormats() {
             hasBlock = true;
             break;
         case md::Style::Link:
-            f.setForeground(role("accent"));
-            f.setUnderlineStyle(QTextCharFormat::SingleUnderline);
-            f.setUnderlineColor(QColor(role("accent").red(), role("accent").green(), role("accent").blue(), 100));
-            break;
         case md::Style::WikiLink:
             f.setForeground(role("accent"));
             f.setUnderlineStyle(QTextCharFormat::SingleUnderline);
-            f.setUnderlineColor(QColor(role("accent").red(), role("accent").green(), role("accent").blue(), 100));
             break;
         case md::Style::Embed:
             f.setFontFamilies({mono});
@@ -786,6 +810,16 @@ void Editor::applyFormats() {
             f.setFontPointSize(pt(12));
             f.setForeground(role("faint"));
             break;
+        case md::Style::Comment: {
+            // No ligatures: "<!--" must not turn into an arrow.
+            QFont plain(mono);
+            plain.setPointSizeF(pt(11.5));
+            plain.setFeature(QFont::Tag("liga"), 0);
+            plain.setFeature(QFont::Tag("calt"), 0);
+            f.setFont(plain, QTextCharFormat::FontPropertiesSpecifiedOnly);
+            f.setForeground(role("dimmest"));
+            break;
+        }
         }
         range(ds, de, f);
         if (hasBlock) blockAt(ds, b);

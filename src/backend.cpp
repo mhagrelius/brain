@@ -588,9 +588,9 @@ void Backend::refreshInsert() {
     }
 }
 
-void Backend::applyInsert(const QString &label, int selectionStart, int selectionEnd) {
+void Backend::applyInsert(const QString &label) {
     m_insertOpen = false;
-    m_editor->applyFormat(label, selectionStart, selectionEnd);
+    m_editor->applyFormat(label, m_selStart, m_selEnd);
     m_recent.removeAll(label);
     m_recent.prepend(label);
     while (m_recent.size() > 3) m_recent.removeLast();

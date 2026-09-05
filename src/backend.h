@@ -157,7 +157,8 @@ public:
     Q_INVOKABLE void openInsert();
     Q_INVOKABLE void closeInsert();
     Q_INVOKABLE void insertFilter(const QString &text);
-    Q_INVOKABLE void applyInsert(const QString &label, int selectionStart, int selectionEnd);
+    Q_INVOKABLE void rememberSelection(int start, int end) { m_selStart = start; m_selEnd = end; }
+    Q_INVOKABLE void applyInsert(const QString &label);
     Q_INVOKABLE void openSearch(const QString &mode);
     Q_INVOKABLE void closeSearch();
     Q_INVOKABLE void searchToggleMode();
@@ -224,6 +225,7 @@ private:
     QString m_vaultLabel, m_sidebarLabel, m_noteTitle, m_noteSubtitle, m_statusLeft, m_statusRight, m_statusDot, m_searchRanking;
     bool m_captureOpen = false, m_insertOpen = false, m_searchOpen = false, m_statusOpen = false;
     int m_captureTarget = 0;   // 0 = Inbox.md, 1 = the open note
+    int m_selStart = 0, m_selEnd = 0;   // the editor selection when the insert menu opened
     brain::Notebook::Mode m_searchMode = brain::Notebook::Mode::Title;
     QString m_searchQuery;
     int m_nextToast = 1;

@@ -14,7 +14,7 @@ Item {
 
     function focusSearch() { searchInput.forceActiveFocus(); searchInput.selectAll() }
     function focusEditor() { if (!App.reading) { textEdit.forceActiveFocus() } }
-    function rememberSelection() { selStart = textEdit.selectionStart; selEnd = textEdit.selectionEnd }
+    function rememberSelection() { selStart = textEdit.selectionStart; selEnd = textEdit.selectionEnd; App.rememberSelection(selStart, selEnd) }
     function format(label) { if (!App.hasNote || App.reading) return; App.editor.applyFormat(label, textEdit.selectionStart, textEdit.selectionEnd); textEdit.forceActiveFocus() }
 
     // ---- header ---------------------------------------------------------------
@@ -84,6 +84,14 @@ Item {
             else if (contentY + height <= r.y + r.height) contentY = r.y + r.height - height + T.s(40)
         }
 
+        // A click below the last line puts the caret at the end.
+        MouseArea {
+            x: textEdit.x; width: textEdit.width
+            y: textEdit.y + textEdit.contentHeight; height: Math.max(0, editorArea.contentHeight - y)
+            cursorShape: Qt.IBeamCursor
+            onClicked: { if (!App.reading) { textEdit.forceActiveFocus(); textEdit.cursorPosition = textEdit.length } }
+        }
+
         // Decorations behind the text: quote bars, table and code boxes.
         Item {
             x: editorArea.padX; y: textEdit.y
@@ -126,9 +134,10 @@ Item {
             Component.onCompleted: { App.editor.document = textEdit.textDocument; App.editor.textEdit = textEdit; App.editor.contentWidth = width }
             onWidthChanged: App.editor.contentWidth = width
             onCursorPositionChanged: App.editor.cursorMoved(cursorPosition)
+            onActiveFocusChanged: App.editor.focused = activeFocus
             onCursorRectangleChanged: if (activeFocus) editorArea.ensureVisible(cursorRectangle)
             Keys.onPressed: function(e) {
-                if (App.editor.completing && completion.count > 0) {
+                if (App.editor.completing && completion.count > 0 && !(e.modifiers & Qt.ControlModifier)) {
                     if (e.key === Qt.Key_Down) { completion.pick = Math.min(completion.count - 1, completion.pick + 1); e.accepted = true; return }
                     if (e.key === Qt.Key_Up) { completion.pick = Math.max(0, completion.pick - 1); e.accepted = true; return }
                     if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter || e.key === Qt.Key_Tab) { App.editor.acceptCompletion(completion.candidates[completion.pick]); e.accepted = true; return }

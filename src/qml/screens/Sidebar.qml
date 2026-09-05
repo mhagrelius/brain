@@ -175,14 +175,19 @@ Rectangle {
         var column = holder.children[0]
         if (!column) return
         var y = p.y + list.contentY - holder.y - column.y
+        var bottom = 0
         for (var j = 0; j < column.children.length; ++j) {
             var c = column.children[j]
             if (c.height <= 0 || !c.visible) continue
+            if (c.modelData !== undefined) bottom = Math.max(bottom, c.y + c.height)
             if (y < c.y || y >= c.y + c.height) continue
             if (c.modelData === undefined) { overRoot = true; return }
             if (c.modelData.kind === "folder") dropTarget = c.modelData.path
             return
         }
+        // Below the last row is the vault root, whether or not the strip has
+        // had a chance to lay itself out yet.
+        if (y >= bottom) overRoot = true
     }
     function finishDrop() {
         if (dragId.length && (dropTarget.length || overRoot)) App.moveNote(dragId, dropTarget)

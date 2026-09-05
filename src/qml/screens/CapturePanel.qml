@@ -16,6 +16,9 @@ Popover {
         if (open < 0) return null
         var q = t.substring(open + 2)
         if (q.indexOf("]]") >= 0 || q.indexOf("\n") >= 0) return null
+        var ahead = input.text.substring(input.cursorPosition)
+        var closer = ahead.indexOf("]]"), opener = ahead.indexOf("[[")
+        if (closer >= 0 && (opener < 0 || closer < opener)) return null
         return q
     }
     function refresh() { var q = linkQuery(); candidates = q === null ? [] : App.linkCandidates(q); pick = 0 }
