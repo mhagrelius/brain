@@ -1,0 +1,24 @@
+# Maintainer: matthew
+pkgname=brain
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="A Markdown notebook for Omarchy"
+arch=('x86_64')
+url="https://github.com/mhagrelius/brain"
+license=('GPL-3.0-or-later')
+depends=('hicolor-icon-theme' 'qt6-base' 'qt6-declarative' 'qt6-svg' 'xdg-desktop-portal')
+makedepends=('cmake' 'ninja')
+source=()
+
+build() {
+  cmake -S "$startdir" -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+  cmake --build build
+}
+
+check() {
+  cd build && ctest --output-on-failure
+}
+
+package() {
+  DESTDIR="$pkgdir" cmake --install build
+}

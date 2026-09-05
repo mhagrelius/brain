@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Brain
+Comment=A Markdown notebook for Omarchy
+Exec=brain
+Icon=brain
+Terminal=false
+Categories=Office;Utility;
+Keywords=notes;markdown;notebook;vault;
+StartupWMClass=brain

@@ -1,13 +1,6 @@
-/target
-/dist
-/preview
-/.flatpak-build
-# Generated from Cargo.lock by packaging/build-flatpak.sh
-/packaging/flatpak/cargo-sources.json
-
-# Deployment secrets and local registry addresses.
-packaging/.env
-server/.env
+build/
+docs/screens/
+*.zip
 
 # Per-machine Claude Code settings. `.claude/settings.json` is shared; this is not.
 /.claude/settings.local.json

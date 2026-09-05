@@ -1,237 +1,109 @@
 # Brain
 
-A Markdown notebook for GNOME, in Rust with GTK 4 and libadwaita.
+A Markdown notebook for Omarchy, in C++ with Qt 6 / Qt Quick.
 
 Your notes are ordinary `.md` files in a folder you choose. Delete Brain and
 they are untouched; put the folder in git and you have history; open it in any
 other editor and it reads the same. Nothing Brain writes into a note is
 unreadable to `cat`.
 
+This is the Omarchy port. The GNOME app (Rust, GTK 4) is on the `main` branch,
+along with `brain-server`, the container that holds the shared vault and its
+vectors on the NAS. The two clients speak the same wire format and read the
+same vault.
+
 ## Features
 
 - **Plain files.** A vault is a folder of `.md` files with optional YAML
-  frontmatter. No database, no lock-in, no proprietary metadata.
+  frontmatter. Only `tags`, `aliases`, `created` and `updated` are understood;
+  everything else is preserved byte for byte.
 - **One editing view.** Source is styled as you type — headings, emphasis,
-  code, quotes, lists, tasks, rules, tables — with syntax hidden outside the
-  construct the caret is in. `Ctrl+E` hides it everywhere and stops edits.
+  code, quotes, lists, tasks, rules, tables — with the syntax hidden outside
+  the construct the caret is in. `Ctrl+E` hides it everywhere and stops edits.
 - **Lists that continue themselves.** Enter repeats the indent and bullet, the
   next number, or a fresh unticked checkbox; Enter on an empty item ends the
-  list.
+  list; Backspace takes the bullet off.
 - **Wikilinks.** `[[` completes over titles and aliases, `Ctrl+Click` or
   `Ctrl+Return` follows, a dead link offers to write the note, and renaming
-  repoints every link that pointed at it. A backlinks pane says what links here.
-- **Tags.** `#tag` inline and `tags:` in frontmatter, nested as `#project/brain`,
-  in a sidebar tree that filters the list.
-- **Folders.** The sidebar is the vault's own directory tree: drag to move notes
-  and whole folders, create, rename and delete from a row's menu, and sort by
-  name, last written or made.
-- **Search.** A sidebar entry filters as you type, `Ctrl+K` jumps to a note by
-  title, and `Ctrl+Shift+F` searches every note's text with the match in
-  context.
-- **Hybrid search, if you run a model.** `Ctrl+Shift+F` also searches by
-  *meaning*: BM25 over the words fused with embeddings from a llama.cpp server
-  you point it at, so "why is my bread so flat" finds the note about hydration
-  that never says either word. No server, no vectors — search is the words alone
-  and nothing is sent anywhere.
-- **Attachments.** Drop a file or paste an image and it is copied into
-  `attachments/` and embedded, drawn inline at its own shape.
-- **Formatting and properties.** `F10` opens a pane with the note's properties
-  and buttons for each construct, labelled with the syntax they write.
+  repoints every link that pointed at it. The rail lists what links here.
+- **Tags.** `#tag` inline and `tags:` in frontmatter, nested as
+  `#project/brain`, in a tree that filters the vault.
+- **Folders.** The sidebar is the vault's own directory tree: drag to move
+  notes and folders, right-click for the rest.
+- **Search.** The header field filters the tree as you type. `Ctrl+K` goes to
+  a note by title; `Ctrl+Shift+F` searches every note's text — BM25 over the
+  words fused with vectors from an embedding server when one is reachable, so
+  "why is my bread so flat" finds the note about hydration. No server is a
+  supported state: search is the words alone.
+- **Sync.** Every machine keeps a full local replica; the server stores and
+  refuses stale writes. A conflict is a note beside the original, never a
+  dialog.
+- **Capture.** `Ctrl+Shift+N` (or `brain capture` from a Hyprland bind) drops
+  a line into `Inbox.md` without leaving what you were doing.
+- **Attachments.** Drop a file or paste an image; it is copied into
+  `attachments/` and embedded, and pictures draw under the line.
 - **It writes carefully.** Saves coalesce on a two-second tick and go out
-  tmp → fsync → rename; frontmatter keys Brain does not understand come back
-  byte for byte; edits made outside Brain are noticed and picked up.
-- **GNOME-native.** libadwaita throughout, light and dark, and a breakpoint that
-  turns the sidebar into an overlay on a narrow window.
+  through a temporary file and a rename; edits made outside Brain are noticed
+  and offered back.
 
-## Install
+## Build and install
 
 ```sh
-./install.sh          # builds and installs into ~/.local — no root
-./uninstall.sh        # removes it, and never touches a vault
+bin/build                                   # → build/brain
+cd build && ctest --output-on-failure       # the gate
+cmake --install build --prefix ~/.local     # binary, .desktop, icon
 ```
 
-Or build a package:
+Or `makepkg -si` in `packaging/`. Depends on `qt6-base`, `qt6-declarative`,
+`qt6-svg`, `xdg-desktop-portal`.
+
+## Pointing it at the NAS
+
+Brain assumes `brain-server` at `http://mattnas:8082` and an embedding model at
+`http://mattnas:8081`. Sync and the shared vector store stay off until a token
+is set, because half a configuration is treated as none:
 
 ```sh
-packaging/build-deb.sh
-packaging/build-flatpak.sh
+brain config sync_token    <the token from the container's .env>
+brain config vectors_token <the same token>
+brain status               # probes /health and says what is configured
 ```
 
-### Requirements
+The same keys live in `~/.config/brain/config.json` — the file the GNOME app
+uses too — as `sync_url`, `sync_token`, `vectors_url`, `vectors_token` and
+`embedding_url`. An empty `embedding_url` turns vectors off.
 
-GTK 4.16 or newer (the stylesheet uses CSS custom properties), libadwaita 1.9,
-and a Rust toolchain of 1.80 or newer.
+## Keys
 
-## Using it
-
-On first launch Brain asks for a folder to keep notes in. Point it at an
-existing folder of Markdown files if you have one.
-
-**The editor shows source, always styled.** Headings scale up, `**bold**`
-renders bold, tables line up in a monospace grid. The syntax characters are
-hidden except in the construct the caret is inside — put it in `**bold**` and
-its asterisks come back, while the link later on the same line stays rendered.
-So a note reads as prose while staying plain text on disk.
-
-**Enter carries a list on.** A new line inside a list starts with the same
-indent and bullet, or the next number, or a fresh unticked checkbox. Enter on
-an empty item ends the list instead, and Backspace takes the bullet back off.
-
-**Reading mode.** `Ctrl+E`, or the eye in the header, hides the syntax
-everywhere and stops the note accepting edits. There is no second widget and no
-preview pane: it is the same view with the caret taken away, so the scroll
-position never moves. In reading mode a plain click follows a link, since
-there is no cursor to place.
-
-**Links.** `[[` opens a completion over note titles and aliases. `Ctrl+Click`
-or `Ctrl+Return` follows a link; following one that points nowhere offers to
-write it. Renaming a note repoints every link that pointed at it. The right
-pane lists what links here.
-
-**The folder tree.** The sidebar is the vault's own folders. Drag a note onto a
-folder to move it — that is a file rename and nothing else, and links keep
-working because they resolve by title. Drag a folder to move it whole, or drop
-either onto the strip below the list — it names itself while a drag is in the
-air — to bring it back out to the vault root. Right-click a note — or
-press `Shift+F10` on it — for rename and delete; right-click a folder for a new
-note or subfolder inside it, or to rename or remove it. A folder is only
-removed once it is empty, so "delete the folder" never means "delete the
-notes". The sort button orders notes by name, by when they were last written,
-or by when they were made; folders stay alphabetical either way.
-
-**Tags.** `#tag` inline and `tags:` in frontmatter are the same thing. They
-nest — `#project/brain` sits under `project` — and clicking one filters the
-list.
-
-**Attachments.** Drop a file on the editor or paste an image; it is copied into
-`attachments/` and embedded. The picture is drawn at its own shape in place of
-the `![[…]]` that names it, and the filename reappears when the caret is in it.
-
-**Search.** The sidebar has a search entry, always there: typing filters the
-list to what matches, by title first and then by text, with the matching line
-shown under each result. `Ctrl+F` puts the cursor in it, Enter opens the top
-result, Escape gives the tree back. `Ctrl+K` goes to a note by title without
-leaving the keyboard, and `Ctrl+Shift+F` searches the text of every note in a
-dialog with the match shown in context.
-
-**Semantic search.** Point Brain at a local embedding server and `Ctrl+Shift+F`
-starts finding notes by what they mean as well as what they say. The words and
-the vectors are searched separately and fused, so a question in your own words
-finds the note, and a serial number still finds the note with the serial number.
-
-```sh
-# a small embedding model, on the CPU, beside whatever is on the GPU
-llama-server -m nomic-embed-text-v1.5.Q8_0.gguf --embeddings --pooling mean \
-             -ngl 0 --host 127.0.0.1 --port 8081
-```
-
-Brain looks for it on `127.0.0.1:8081`; `embedding_url` in
-`~/.config/brain/config.json` points it elsewhere, and an empty string turns the
-whole thing off. With no server reachable, search is the words alone — that is a
-supported state, not a broken one.
-
-The server does not have to be this machine, and a small always-on box is a
-better home for it than a desktop whose GPU comes down for games. Measured
-against a Xeon D-1527 NAS over Tailscale: 38 ms to embed a query, and 180 ms to
-embed a changed note, against 5 ms and 10 ms on a desktop CPU. Only the first
-pass over an existing vault is slow — about 90 seconds per 500 notes there — and
-it runs in the background and resumes if interrupted. **Point it somewhere and
-your notes' text goes there**, so point it at something you own.
-
-Keep the model's alias (`-a`) identical wherever you serve it. Brain keys its
-cache on the name the server reports, so the same model under two names looks
-like two models and re-embeds the vault; under the same name, the cache is
-portable and you can move the server without paying for it again.
-
-Notes are embedded a few seconds after they change, in the background, and the
-vectors are cached under `~/.cache/brain/`. Nothing is written into the vault,
-and deleting the cache costs one pass of re-embedding — about five seconds per
-five hundred notes on a CPU. Notes moved, renamed or deleted *outside* Brain are
-reconciled on the next scan; a note that only moved keeps its vectors rather than
-being embedded again. `cargo run --example semantic_check` proves all of that
-against whatever model you are actually serving.
-
-**Details.** `F10` opens a pane with the note's properties and a set of
-formatting buttons, each showing the syntax it writes. They grey out while you
-are reading.
-
-Frontmatter is optional. Only `tags`, `aliases`, `created` and `updated` are
-understood, and **everything else is preserved verbatim** — a note written by
-another tool does not get mangled.
+`1`–`3` views · `Ctrl+N` new note · `Ctrl+K` go to note · `Ctrl+Shift+F`
+search text · `Ctrl+F` or `/` filter the tree · `Ctrl+E` reading mode ·
+`Ctrl+Space` insert menu · `Ctrl+Shift+N` capture · `Ctrl+S` save now ·
+`Ctrl+Shift+S` sync and search status · `Shift+F10` row menu.
 
 ## How it works
 
 ```
-src/
-  model/                   no GTK — cargo test with no display
-    markdown/              source → styled spans + hideable syntax markers
-    frontmatter.rs         the restricted parser, verbatim round-trip
-    note.rs                the record: id, frontmatter, body
-    vault.rs               the folder: scan, atomic writes, attachments
-    index.rs               titles, aliases, links, backlinks, tags, text
-    search.rs              fuzzy titles, full text, and the RRF fusion
-    bm25.rs                lexical ranking over the counts already in memory
-    semantic.rs            vectors, the catch-up planner, the embedder seam
-    tree.rs                folders and notes as sidebar rows, sorted
-    config.rs              the one thing outside the vault: which vault
-  ui/
-    application.rs         owns the vault and index; the only thing that writes
-    window.rs              split views, breakpoint, dialogs
-    editor.rs              the TextView, incremental re-styling, formatting
-    highlight.rs           spans → TextTags
-    sidebar.rs, tag_tree.rs, details_panel.rs, backlinks_panel.rs
-    palette.rs             Ctrl+K and Ctrl+Shift+F
-    attachments.rs         drop, paste, embedded images
-    embedder.rs            the one socket: a local llama.cpp server
-    watcher.rs             gio::FileMonitor per directory
+src/core/      the vault, notes, index, search, vectors, sync — QtCore only, ctest-covered
+src/net/       the sockets: a blocking HTTP client, the embedder, the server client
+src/backend.*  the App singleton: timers, watcher, worker threads, every row QML shows
+src/editor.*   the editing model: source ↔ display map, hidden syntax, formats
+src/qml/       Main, the sidebar, the note pane, the rail, the summoned surfaces
+docs/handoff/  the design this was built from
 ```
 
-**The vault is canonical, the index is derived.** Widgets emit signals of
-intent; `BrainApplication` is the single place that writes a file. Saves are
-coalesced by a two-second tick, written tmp → fsync → rename, and flushed on
-note switch, close and shutdown.
+The vault is canonical and the index derived. `Notebook` is the only thing
+that writes a file. The scanner reports which characters are syntax, not just
+what is styled — that is the whole editing model, ported from `quill`.
 
-**The scanner reports which characters are syntax**, not just what is styled —
-that is the whole editing model, and it is why no general Markdown crate would
-do. It lives in [quill](https://github.com/mhagrelius/quill), which Stickies and
-Familiar read too, and is re-exported here as `brain::model::markdown`. See
-DESIGN.md.
+### Built differently from the GNOME app
 
-**Re-styling is per line.** A keystroke re-scans the line under the cursor and
-the one above it; only an edit that changes what follows escalates to a full
-re-scan.
-
-**Nothing async.** GLib timers for the save tick and the search debounce.
-
-## Development
-
-```sh
-cargo build
-./test.sh                       # fmt, clippy -D warnings, tests
-./test.sh --headless            # the same under Xvfb
-cargo run --example preview -- /tmp/preview [dark]
-cargo run --example icons_check # every icon name resolves in the theme
-cargo run --example semantic_check  # hybrid search against a real model server
-```
-
-`semantic_check` is not part of `test.sh` because it needs a model served. It
-builds a vault, embeds it, asks questions whose answers are known — including
-ones the vault cannot answer, which must come back empty — then moves, edits and
-deletes notes behind the app's back and checks the vectors caught up. It exits
-non-zero on any failure, so it runs as a gate rather than reads as a demo.
-
-### Tests
-
-| Where | Covers |
-|---|---|
-| `src/model/**` | frontmatter round-trip, index, search — the bulk. The scanner is tested in `quill` |
-| `tests/session.rs` | whole scenarios against a real vault, no GTK — including the vectors keeping up with files changed behind the app's back |
-| `tests/widgets.rs` | widgets, in one `#[test]` because GTK is thread-affine |
-| `tests/lifecycle.rs` | the real application, driven end to end |
-| `tests/first_run.rs` | an empty vault and the first note made in it |
-
-`examples/preview.rs` renders every pane to PNG in light and dark, so "does
-this look right?" is answerable without a screenshot prompt.
+- Frontmatter is not shown in the editor; the rail edits tags and aliases.
+- The formatting panel is an insert menu (`Ctrl+Space`).
+- Re-styling re-scans the whole note rather than one line: the scanner is
+  microseconds on a note and the per-line cache was there for GTK's tag
+  churn, which a QTextDocument does not have.
+- Undo is Brain's own, over the source, since the document's undo stack
+  would otherwise remember the hiding and revealing of syntax.
 
 ## Licence
 

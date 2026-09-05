@@ -1,0 +1,24 @@
+#!/usr/bin/env sh
+# Render every screen × state headless at design scale into docs/screens (or $1).
+# OMARCHY_THEME_DIR previews another theme; OMARCHY_TEXT_SCALE=1.3 checks growth.
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+OUT="${1:-$ROOT/docs/screens}"
+mkdir -p "$OUT"
+grab() {
+  name="$1"; shift
+  QT_FORCE_STDERR_LOGGING=1 QT_QPA_PLATFORM=offscreen OMARCHY_TEXT_SCALE="${OMARCHY_TEXT_SCALE:-1}" BRAIN_OFFLINE=1 \
+    timeout 30 "$ROOT/build/brain" --demo "$@" --grab "$OUT/$name.png" 2>&1 | grep -v propertyCache || true
+}
+grab notes --screen notes
+grab tags --screen tags --act tags
+grab inbox --screen inbox
+grab reading --act reading
+grab capture --act capture
+grab insert --act insert
+grab search --act search
+grab titles --act titles
+grab toasts --act conflict,synced,embedding
+grab status --act status
+grab prompt --act prompt
+ls "$OUT"

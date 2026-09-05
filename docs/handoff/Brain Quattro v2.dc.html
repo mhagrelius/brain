@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+  body { margin: 0; background: #141414; }
+  a { color: #e6bd63; text-decoration: none; }
+  a:hover { color: #f0cf7a; }
+</style>
+</helmet>
+
+<section style="display:flex;flex-direction:column;gap:28px;padding:56px;background:#141414;color:#e9e9e9;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif">
+
+  <div style="display:flex;flex-direction:column;gap:10px;max-width:980px">
+    <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#6b6b6b">Turn 2 · Brain · the app, in your language</div>
+    <div style="font-size:26px;font-weight:700;line-height:1.25">Dressed like Ledger and Buddy</div>
+    <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px;line-height:1.8;color:#a0a0a0;text-wrap:pretty">Neutral darks, numbered nav with the slate fill, mono for every number and label, sans for names, one amber action per screen, a mono status rail top and bottom. Brain's editing model is unchanged: source always styled, syntax revealed only in the construct holding the caret.</div>
+  </div>
+
+  <!-- ============================= 2a : the window ============================= -->
+  <div id="2a" style="display:flex;flex-direction:column;gap:12px;width:1440px;flex:none">
+    <div style="display:flex;align-items:baseline;gap:12px">
+      <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;font-weight:700;letter-spacing:.1em;padding:3px 8px;background:#2a2a2a;border:1px solid #3a3a3a;color:#e9e9e9">2A</div>
+      <div style="font-size:15px;font-weight:700">The vault window</div>
+      <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">1440 × 900 · tiled, no client decorations</div>
+    </div>
+
+    <div data-screen-label="2a vault window" style="width:1440px;height:900px;box-sizing:border-box;border:1px solid #333;background:#1c1c1c;display:flex;overflow:hidden">
+
+
+        <!-- ---------- sidebar ---------- -->
+        <div style="width:290px;flex:none;display:flex;flex-direction:column;background:#1c1c1c;border-right:1px solid #2a2a2a">
+          <div style="flex:none;padding:16px 16px 14px">
+            <div style="font-size:16px;font-weight:700;letter-spacing:-.01em">Brain</div>
+            <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b;padding-top:3px">~/notes · 218 notes</div>
+          </div>
+
+          <!-- one row spec for both groups: 32px tall, an 11px leading slot for the
+               number or the disclosure mark, 14px to the label, mono count on the right -->
+          <div style="flex:none;padding:0 8px;display:flex;flex-direction:column;gap:2px">
+            <div style="display:flex;align-items:center;gap:14px;height:32px;padding:0 12px;border-radius:6px;background:#384a48">
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#cfe3df;width:11px;flex:none">1</span>
+              <span style="font-size:13.5px;font-weight:700;flex:1">Notes</span>
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#cfe3df">218</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px;height:32px;padding:0 12px;border-radius:6px">
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b;width:11px;flex:none">2</span>
+              <span style="font-size:13.5px;flex:1;color:#c8c8c8">Tags</span>
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">24</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px;height:32px;padding:0 12px;border-radius:6px">
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b;width:11px;flex:none">3</span>
+              <span style="font-size:13.5px;flex:1;color:#c8c8c8">Inbox</span>
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#e8a54a">3</span>
+            </div>
+          </div>
+
+          <!-- the views end here; the vault below is a different kind of list -->
+          <div style="flex:none;height:1px;background:#2a2a2a;margin:18px 0 0"></div>
+          <div style="flex:none;display:flex;align-items:baseline;justify-content:space-between;padding:14px 16px 8px">
+            <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#6b6b6b">Vault</span>
+            <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#5c5c5c">name ↓</span>
+          </div>
+
+          <!-- tree, on the same row spec: the mark sits in the number's slot, so note
+               titles land under folder names and both land under the nav labels -->
+          <div style="flex:1;min-height:0;overflow:hidden;padding:0 8px">
+            <div style="display:flex;align-items:center;gap:14px;height:32px;padding:0 12px;border-radius:6px">
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b;width:11px;flex:none">v</span>
+              <span style="font-size:13.5px;font-weight:700;flex:1">baking</span>
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">6</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px;height:32px;padding:0 12px 0 37px;border-radius:6px;background:#252525">
+              <span style="font-size:13.5px;flex:1">Sourdough</span>
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">2h</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px;height:32px;padding:0 12px 0 37px;border-radius:6px">
+              <span style="font-size:13.5px;flex:1;color:#c8c8c8">Bulk Fermentation</span>
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">1d</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px;height:32px;padding:0 12px 0 37px;border-radius:6px">
+              <span style="font-size:13.5px;flex:1;color:#c8c8c8">Starter Log</span>
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">3d</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px;height:32px;padding:0 12px 0 37px;border-radius:6px">
+              <span style="font-size:13.5px;flex:1;color:#c8c8c8">Oven Notes</span>
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">1w</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px;height:32px;padding:0 12px;border-radius:6px">
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b;width:11px;flex:none">&gt;</span>
+              <span style="font-size:13.5px;font-weight:700;flex:1;color:#c8c8c8">projects</span>
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">9</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px;height:32px;padding:0 12px;border-radius:6px">
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b;width:11px;flex:none">&gt;</span>
+              <span style="font-size:13.5px;font-weight:700;flex:1;color:#c8c8c8">reading</span>
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">12</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px;height:32px;padding:0 12px;border-radius:6px">
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b;width:11px;flex:none">&gt;</span>
+              <span style="font-size:13.5px;font-weight:700;flex:1;color:#c8c8c8">work</span>
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">64</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:14px;height:32px;padding:0 12px 0 37px;border-radius:6px;margin-top:6px">
+              <span style="font-size:13.5px;flex:1;color:#c8c8c8">Vault Conventions</span>
+              <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">2w</span>
+            </div>
+          </div>
+
+          <div style="flex:none;height:26px;display:flex;align-items:center;justify-content:space-between;padding:0 14px;border-top:1px solid #2a2a2a;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#5c5c5c">
+            <span>Ctrl+K · insert Ctrl+Space</span><span>1-3</span>
+          </div>
+        </div>
+
+        <!-- ---------- content ---------- -->
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+          <!-- header -->
+          <div style="flex:none;display:flex;align-items:flex-start;gap:16px;padding:14px 20px 14px;border-bottom:1px solid #2a2a2a">
+            <div style="flex:1;min-width:0">
+              <div style="font-size:15px;font-weight:700">Sourdough</div>
+              <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b;padding-top:3px">baking · updated 2026-09-02 · 412 words</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;flex:none">
+              <div style="display:flex;align-items:center;gap:8px;height:32px;padding:0 10px;border:1px solid #3a3a3a;border-radius:6px;background:#212121;width:250px">
+                <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#5c5c5c">⌕</span>
+                <span style="font-size:13px;color:#8a8a8a;flex:1">Search notes</span>
+                <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#8a8a8a;border:1px solid #3a3a3a;border-radius:4px;padding:1px 5px">/</span>
+              </div>
+              <div style="height:32px;display:flex;align-items:center;padding:0 14px;border-radius:6px;background:#f0cf7a;color:#1c1c1c;font-size:13px;font-weight:700">+ New note</div>
+            </div>
+          </div>
+
+          <div style="flex:1;min-height:0;display:flex;overflow:hidden">
+            <!-- editor -->
+            <div style="flex:1;min-width:0;overflow:hidden;padding:26px 28px 0">
+              <div style="max-width:74ch;font-size:14.5px;line-height:1.8;color:#e9e9e9">
+                <!-- frontmatter stays in the file; it is read in the rail, not rendered here -->
+                <div style="font-size:24px;font-weight:700;line-height:1.3">Sourdough</div>
+                <div style="padding-top:10px">Hydration is the whole game. Anything past 80% and the crumb opens up, but the dough stops holding a shape — see <span style="color:#e6bd63;border-bottom:1px solid rgba(230,189,99,.4)">Bulk Fermentation</span> before you push it, and log the result under <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12.5px;color:#7ed0dc">#baking/notes</span>.</div>
+
+                <div style="font-size:18px;font-weight:700;padding-top:22px">What went wrong</div>
+                <div style="padding-top:8px">The <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12.5px;color:#5c5c5c">**</span><span style="font-weight:700">starter</span><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12.5px;color:#5c5c5c">**</span><span style="display:inline-block;width:2px;height:1.05em;background:#f0cf7a;vertical-align:-2px"></span> was cold, so the second rise never came. <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12.5px;background:#262626;border:1px solid #323232;border-radius:4px;padding:1px 5px;color:#9ee065">21°C</span> is the floor.</div>
+
+                <div style="padding-left:26px;text-indent:-15px;padding-top:10px"><span style="font-family:'JetBrains Mono',ui-monospace,monospace;color:#6b6b6b">-</span> Feed twice before a bake, not once.</div>
+                <div style="padding-left:26px;text-indent:-15px"><span style="font-family:'JetBrains Mono',ui-monospace,monospace;color:#6b6b6b">-</span> Watch the dough, not the clock.</div>
+                <div style="padding-left:26px;text-indent:-15px"><span style="font-family:'JetBrains Mono',ui-monospace,monospace;color:#6b6b6b">-</span> <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12.5px;color:#9ee065">[x]</span> <span style="color:#6b6b6b">buy rye flour</span></div>
+                <div style="padding-left:26px;text-indent:-15px"><span style="font-family:'JetBrains Mono',ui-monospace,monospace;color:#6b6b6b">-</span> <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12.5px;color:#e8a54a">[ ]</span> proof at 26°C and measure</div>
+
+                <div style="padding-left:26px;border-left:2px solid #384a48;margin-left:2px;font-style:italic;color:#8a8a8a;padding-top:2px;margin-top:14px">A slack dough is not a wet dough.</div>
+
+                <div style="margin-top:18px;border:1px solid #2a2a2a;border-radius:6px;background:#1f1f1f;padding:8px 12px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12.5px;line-height:1.7;color:#c8c8c8">
+                  <div>| Hydration | Crumb  |</div>
+                  <div style="color:#5c5c5c">|-----------|--------|</div>
+                  <div>| 72%       | even   |</div>
+                  <div>| 84%       | open   |</div>
+                </div>
+
+                <div style="padding-top:18px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#e6bd63">oven-spring.jpg</div>
+                <div style="margin-top:6px;width:340px;height:132px;border:1px solid #323232;border-radius:8px;position:relative;overflow:hidden;background:#1f1f1f">
+                  <svg width="100%" height="100%" preserveAspectRatio="none" viewBox="0 0 340 132"><defs><pattern id="v2-stripe" width="8" height="8" patternTransform="rotate(45)" patternUnits="userSpaceOnUse"><rect width="8" height="8" fill="#1f1f1f" /><rect width="4" height="8" fill="rgba(255,255,255,.035)" /></pattern></defs><rect width="340" height="132" fill="url(#v2-stripe)" /></svg>
+                  <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">attachment · oven-spring.jpg</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- right rail -->
+            <div style="width:360px;flex:none;border-left:1px solid #2a2a2a;padding:16px;display:flex;flex-direction:column;gap:14px;overflow:hidden">
+              <div style="border:1px solid #323232;border-radius:8px;background:#212121;padding:14px">
+                <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#6b6b6b">This note</div>
+                <div style="display:flex;flex-direction:column;padding-top:8px">
+                  <div style="display:flex;justify-content:space-between;align-items:center;height:26px;border-bottom:1px solid #2a2a2a"><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#8a8a8a">folder</span><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px">baking</span></div>
+                  <div style="display:flex;justify-content:space-between;align-items:center;height:26px;border-bottom:1px solid #2a2a2a"><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#8a8a8a">words</span><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px">412</span></div>
+                  <div style="display:flex;justify-content:space-between;align-items:center;height:26px;border-bottom:1px solid #2a2a2a"><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#8a8a8a">created</span><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px">2026-08-14</span></div>
+                  <div style="display:flex;justify-content:space-between;align-items:center;height:26px;border-bottom:1px solid #2a2a2a"><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#8a8a8a">updated</span><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px">2026-09-02</span></div>
+                  <div style="display:flex;justify-content:space-between;align-items:center;height:26px;border-bottom:1px solid #2a2a2a"><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#8a8a8a">aliases</span><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px">starter notes</span></div>
+                  <div style="display:flex;justify-content:space-between;align-items:center;height:26px"><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#8a8a8a">on disk</span><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px;color:#9ee065">clean</span></div>
+                </div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap;padding-top:12px">
+                  <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#7ed0dc;border:1px solid #2f4348;border-radius:4px;padding:1px 6px">#baking</span>
+                  <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#7ed0dc;border:1px solid #2f4348;border-radius:4px;padding:1px 6px">#project/brain</span>
+                </div>
+              </div>
+
+              <div style="border:1px solid #323232;border-radius:8px;background:#212121;padding:14px">
+                <div style="display:flex;align-items:baseline;justify-content:space-between">
+                  <div style="font-size:13.5px;font-weight:700">Backlinks</div>
+                  <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">2 notes</div>
+                </div>
+                <div style="padding-top:10px;display:flex;flex-direction:column;gap:10px">
+                  <div style="display:flex;gap:10px">
+                    <div style="width:26px;height:26px;flex:none;border-radius:6px;background:#262626;border:1px solid #323232;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#a0a0a0">B</div>
+                    <div style="flex:1;min-width:0">
+                      <div style="font-size:13px">Bulk Fermentation</div>
+                      <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b;line-height:1.5;padding-top:2px">reheat the kitchen before you blame the sourdough</div>
+                    </div>
+                  </div>
+                  <div style="display:flex;gap:10px">
+                    <div style="width:26px;height:26px;flex:none;border-radius:6px;background:#262626;border:1px solid #323232;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#a0a0a0">S</div>
+                    <div style="flex:1;min-width:0">
+                      <div style="font-size:13px">Starter Log</div>
+                      <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b;line-height:1.5;padding-top:2px">fed 1:2:2 at 21°C, the way sourdough says to</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- status bar -->
+          <div style="flex:none;height:28px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-top:1px solid #2a2a2a;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">
+            <span>editing · 412 words · 2 backlinks · vectors 218/218</span>
+            <span style="display:flex;align-items:center;gap:8px">synced 12:41 <span style="color:#9ee065">●</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  <!-- ============================= surfaces ============================= -->
+  <div style="display:flex;flex-direction:column;gap:8px;padding-top:20px;border-top:1px solid #2a2a2a">
+    <div style="font-size:15px;font-weight:700">Summoned surfaces</div>
+    <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">capture, insert, search and status — over the window or with none open</div>
+  </div>
+
+  <div style="display:flex;flex-wrap:wrap;gap:32px;align-items:flex-start">
+
+    <!-- capture + insert -->
+    <div style="display:flex;flex-direction:column;gap:10px;width:560px;flex:none">
+      <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#6b6b6b">Quick capture · panel · super+n</div>
+      <div style="width:560px;border:1px solid #333;border-radius:8px;background:#1c1c1c;box-shadow:0 18px 40px rgba(0,0,0,.5);overflow:hidden">
+        <div style="padding:12px 14px;border-bottom:1px solid #2a2a2a;display:flex;align-items:baseline;justify-content:space-between">
+          <div style="font-size:14px;font-weight:700">Capture</div>
+          <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">→ Inbox.md</div>
+        </div>
+        <div style="padding:14px">
+          <div style="min-height:32px;display:flex;gap:8px;padding:8px 10px;border:1px solid #3a3a3a;border-radius:6px;background:#212121;font-size:13.5px;line-height:1.7">
+            <span style="color:#e6bd63;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px">+</span>
+            <div style="flex:1">Proof at 26°C next bake — <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px;color:#7ed0dc">#baking</span> and link <span style="color:#e6bd63">[[Starter Log</span><span style="display:inline-block;width:2px;height:1.05em;background:#f0cf7a;vertical-align:-2px"></span></div>
+          </div>
+          <div style="margin-top:6px;border:1px solid #2a2a2a;border-radius:6px;background:#1f1f1f;overflow:hidden">
+            <div style="display:flex;align-items:center;gap:10px;height:30px;padding:0 10px;background:#252525"><span style="font-size:13px;flex:1">Starter Log</span><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#6b6b6b">baking</span></div>
+            <div style="display:flex;align-items:center;gap:10px;height:30px;padding:0 10px"><span style="font-size:13px;flex:1;color:#c8c8c8">Starter Ratios</span><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#6b6b6b">baking</span></div>
+            <div style="display:flex;align-items:center;gap:10px;height:30px;padding:0 10px"><span style="font-size:13px;flex:1;color:#c8c8c8">Sourdough</span><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#6b6b6b">alias: starter notes</span></div>
+          </div>
+        </div>
+        <div style="height:28px;display:flex;align-items:center;gap:16px;padding:0 14px;border-top:1px solid #2a2a2a;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#5c5c5c">
+          <span>return save</span><span>ctrl+return save + open</span><span>tab destination</span><span>esc discard</span>
+        </div>
+      </div>
+
+      <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#6b6b6b;padding-top:8px">Insert menu · ctrl+space</div>
+      <div style="width:520px;border:1px solid #333;border-radius:8px;background:#1c1c1c;box-shadow:0 18px 40px rgba(0,0,0,.5);overflow:hidden">
+        <div style="padding:12px 14px;border-bottom:1px solid #2a2a2a">
+          <div style="height:30px;display:flex;align-items:center;gap:8px;padding:0 10px;border:1px solid #3a3a3a;border-radius:6px;background:#212121;font-size:13px">
+            <span style="color:#e6bd63;font-family:'JetBrains Mono',ui-monospace,monospace">/</span><span>ta</span><span style="display:inline-block;width:2px;height:15px;background:#f0cf7a"></span>
+            <div style="flex:1"></div><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#6b6b6b">wraps the selection</span>
+          </div>
+        </div>
+        <div style="padding:8px 0">
+          <div style="display:flex;align-items:center;gap:12px;height:30px;padding:0 14px;background:#252525">
+            <span style="font-size:13px;width:130px"><b>Ta</b>sk</span><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px;color:#8a8a8a;flex:1">- [ ] </span><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#6b6b6b">ctrl+shift+t</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;height:30px;padding:0 14px">
+            <span style="font-size:13px;width:130px;color:#c8c8c8"><b style="color:#e9e9e9">Ta</b>ble</span><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px;color:#8a8a8a;flex:1">| a | b |</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;height:30px;padding:0 14px">
+            <span style="font-size:13px;width:130px;color:#c8c8c8">S<b style="color:#e9e9e9">t</b>rikethrough</span><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px;color:#8a8a8a;flex:1">~~text~~</span>
+          </div>
+          <div style="height:1px;background:#2a2a2a;margin:8px 0"></div>
+          <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#6b6b6b;padding:0 14px 6px">Recent</div>
+          <div style="display:flex;align-items:center;gap:12px;height:30px;padding:0 14px">
+            <span style="font-size:13px;width:130px;color:#c8c8c8">Link to Note</span><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px;color:#8a8a8a;flex:1">[[Note]]</span><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#6b6b6b">ctrl+l</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;height:30px;padding:0 14px">
+            <span style="font-size:13px;width:130px;color:#c8c8c8">Code Block</span><span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px;color:#8a8a8a;flex:1">```</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- unified menu -->
+    <div style="display:flex;flex-direction:column;gap:10px;width:660px;flex:none">
+      <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#6b6b6b">Unified menu · super+space › Brain › notes</div>
+      <div style="width:660px;border:1px solid #333;border-radius:8px;background:#1c1c1c;box-shadow:0 22px 50px rgba(0,0,0,.55);overflow:hidden">
+        <div style="padding:12px 14px;border-bottom:1px solid #2a2a2a">
+          <div style="display:flex;align-items:center;gap:8px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#6b6b6b;padding-bottom:10px">
+            <span>omarchy</span><span>›</span><span>brain</span><span>›</span><span style="color:#e6bd63">notes</span><div style="flex:1"></div><span>bm25 + vectors, fused</span>
+          </div>
+          <div style="height:32px;display:flex;align-items:center;gap:8px;padding:0 10px;border:1px solid #3a3a3a;border-radius:6px;background:#212121;font-size:13.5px">
+            <span style="color:#e6bd63;font-family:'JetBrains Mono',ui-monospace,monospace">/</span><span>why is my bread so flat</span><span style="display:inline-block;width:2px;height:16px;background:#f0cf7a"></span>
+          </div>
+        </div>
+        <div style="padding:8px 0">
+          <div style="display:flex;align-items:center;gap:12px;padding:9px 14px;background:#252525">
+            <div style="width:26px;height:26px;flex:none;border-radius:6px;background:#2c2c2c;border:1px solid #3a3a3a;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#a0a0a0">S</div>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13.5px;font-weight:700">Sourdough</div>
+              <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b;padding-top:1px">baking · the dough <span style="color:#c8c8c8">stops holding a shape</span></div>
+            </div>
+            <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#9ee065">0.91</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;padding:9px 14px">
+            <div style="width:26px;height:26px;flex:none;border-radius:6px;background:#262626;border:1px solid #323232;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#8a8a8a">B</div>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13.5px;color:#e9e9e9">Bulk Fermentation</div>
+              <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b;padding-top:1px">baking · grown by half and <span style="color:#c8c8c8">holds a dome</span></div>
+            </div>
+            <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">0.74</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;padding:9px 14px">
+            <div style="width:26px;height:26px;flex:none;border-radius:6px;background:#262626;border:1px solid #323232;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#8a8a8a">O</div>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13.5px;color:#e9e9e9">Oven Notes</div>
+              <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b;padding-top:1px">baking · steam twelve minutes, then <span style="color:#c8c8c8">vent</span></div>
+            </div>
+            <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">0.62</div>
+          </div>
+          <div style="height:1px;background:#2a2a2a;margin:8px 0"></div>
+          <div style="display:flex;align-items:center;gap:12px;padding:9px 14px">
+            <div style="width:26px;height:26px;flex:none;border-radius:6px;background:#262626;border:1px solid #323232;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px;color:#9ee065">+</div>
+            <div style="flex:1;font-size:13.5px;color:#9ee065">New note “why is my bread so flat”</div>
+            <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#6b6b6b">baking/</div>
+          </div>
+        </div>
+        <div style="height:28px;display:flex;align-items:center;gap:16px;padding:0 14px;border-top:1px solid #2a2a2a;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#5c5c5c">
+          <span>↑↓ move</span><span>return open</span><span>tab titles / text</span><span>← back</span><span>esc close</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- notifications + osd -->
+    <div style="display:flex;flex-direction:column;gap:10px;width:420px;flex:none">
+      <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#6b6b6b">Notifications and OSD</div>
+      <div style="width:400px;border:1px solid #333;border-radius:8px;background:#1c1c1c;padding:14px;display:flex;gap:12px">
+        <div style="width:3px;background:#9ee065;border-radius:2px;flex:none"></div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13.5px;font-weight:700">Vault synced</div>
+          <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11.5px;color:#a0a0a0;line-height:1.6;padding-top:3px">4 notes pushed, 1 pulled. Nothing conflicted.</div>
+          <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#5c5c5c;padding-top:7px">brain · now</div>
+        </div>
+      </div>
+
+      <div style="width:400px;border:1px solid #333;border-radius:8px;background:#1c1c1c;padding:14px;display:flex;gap:12px">
+        <div style="width:3px;background:#ff6f8d;border-radius:2px;flex:none"></div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13.5px;font-weight:700;color:#ff6f8d">Sourdough.md changed on disk</div>
+          <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11.5px;color:#a0a0a0;line-height:1.6;padding-top:3px">Your edits are still here. Keep them, or take the file.</div>
+          <div style="display:flex;gap:8px;padding-top:11px">
+            <div style="height:28px;display:flex;align-items:center;padding:0 12px;border-radius:6px;background:#f0cf7a;color:#1c1c1c;font-size:12.5px;font-weight:700">Take the file</div>
+            <div style="height:28px;display:flex;align-items:center;padding:0 12px;border-radius:6px;border:1px solid #3a3a3a;background:#212121;font-size:12.5px;color:#c8c8c8">Keep mine</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <div style="border:1px solid #333;border-radius:8px;background:#1c1c1c;padding:10px 14px;display:flex;align-items:center;gap:10px">
+          <span style="font-size:13px">Reading mode</span>
+          <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;color:#6b6b6b;border:1px solid #3a3a3a;border-radius:4px;padding:1px 5px">ctrl+e</span>
+        </div>
+        <div style="border:1px solid #333;border-radius:8px;background:#1c1c1c;padding:10px 14px;display:flex;align-items:center;gap:10px">
+          <span style="font-size:13px">Embedding</span>
+          <span style="display:inline-block;width:80px;height:4px;background:#2e2e2e;border-radius:2px"><span style="display:block;width:20px;height:4px;background:#7ed0dc;border-radius:2px"></span></span>
+          <span style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:11px;color:#7ed0dc">128/500</span>
+        </div>
+      </div>
+    </div>
+
+
+  </div>
+</section>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>

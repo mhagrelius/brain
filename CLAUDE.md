@@ -1,54 +1,36 @@
 # brain
 
-A Markdown notebook. Owns the vault format (Markdown + frontmatter) that Familiar also reads.
+A Markdown notebook for Omarchy: Qt 6 / Qt Quick, C++20. Owns the vault format (Markdown + frontmatter) that Familiar also reads, and talks to `brain-server` on the NAS for sync and shared vectors.
 
-## Stack
-
-GTK 4.22 + libadwaita 1.9 via gtk4-rs 0.11 / libadwaita-rs 0.9, Rust edition 2021 (MSRV 1.80). `gio` is a direct dependency purely to raise the API level to v2_80 — leave it.
-
-Cargo workspace of two crates. `brain-core` (`core/`) is the vault, notes, index and search, and links no UI toolkit at all — not even GLib. `brain` (the root package) is the GTK shell, a lib + bin so integration tests and `examples/` can drive the real application rather than a copy of it. `src/lib.rs` re-exports the core as `brain::model`, so every `model::…` path reads as it always did.
-
-See `PLAN.md` for where this is going: the split exists so a second shell on another platform can keep the core.
+This branch (`omarchy`) replaced the Rust + GTK app with this one. The server (`brain-server`, Rust) still lives on `main` under `server/`; the wire format it speaks is pinned here by `tests/test_wire.cpp`.
 
 ## Commands
 
-- `./test.sh` — fmt check, clippy with `-D warnings`, then `cargo test --workspace --all-targets`. Add `--headless` to run under Xvfb + a private D-Bus session. This is the gate; run it, not bare `cargo test`. **`--workspace` is not optional**: without it cargo tests only the root package, and the whole of `brain-core` — the half that needs no display — silently does not run.
-- **Never run `dbus-run-session` or `xvfb-run -a dbus-run-session` directly** — use `isolated-bus [--headless] -- CMD`. A private bus activates its own `xdg-document-portal`, which mounts over `/run/user/$UID/doc` and takes the login session's portal down with it when the bus exits; every flatpak on the machine then fails to launch until it is restarted. `test.sh --headless` guards against this internally, but one-off runs of a single test, or of the built binary, bypass it.
-- `cargo run --example preview -- <dir> [dark]` — renders the real widgets to PNG offscreen. This is how a UI change is looked at; screenshotting a live Wayland session needs interactive consent. Run it under `xvfb-run -a`.
-- `cargo run --example icons_check` — asserts every icon name resolves. An unresolved one draws a missing-image glyph and warns about nothing, so add new names to `USED`.
-- `./install.sh` — release build, installs under `~/.local`. `./uninstall.sh` reverses it.
-- `packaging/build-flatpak.sh` and `packaging/build-deb.sh` — distribution artifacts.
-- `./sync-check.sh` — starts a throwaway `brain-server`, drives it with the real client, and takes it down. The only check that catches a client and a server which are each self-consistent and disagree. Not part of `test.sh`, because it wants a port and a build of both.
-- `server/` is `brain-server`: the shared vector store, and the vault as real Markdown files. `podman build -f server/Containerfile -t brain-server .` from the repo root — the context must be the workspace, since it depends on `brain-core` by path. It needs `BRAIN_VECTORS_TOKEN` (32 characters or more) and refuses to start without one. **`notes::path_of` is the only thing between a note id off the network and the server's filesystem** — it allows rather than forbids, and its test table is the specification.
+- `bin/build` → `build/brain`. Install: `cmake --install build --prefix ~/.local`. Package: `packaging/PKGBUILD`.
+- `cd build && ctest --output-on-failure` — one QtTest executable per `src/core/` area plus the wire format. This is the gate.
+- `bin/grab [dir]` renders every screen × state headless (`--demo --screen … --act … --grab file.png`); `./build/brain --info` proves the theme parsed. `OMARCHY_TEXT_SCALE=1.3` checks growth, `OMARCHY_THEME_DIR=/usr/share/omarchy/themes/<name>` another theme.
+- `./build/brain --demo` opens a throwaway vault of sample notes; `--vault <dir>` opens a folder for one run. Both are scratch runs: a private config and cache, no single-instance socket, no network unless `BRAIN_OFFLINE` is unset.
+- CLI verbs go to the running instance: `brain capture`, `brain search [titles|text]`, `brain sync`, `brain status`, `brain config <key> [value]`.
+- Qt logs go to the journal unless `QT_FORCE_STDERR_LOGGING=1`.
 
 ## Layout
 
-`core/src/` is pure logic with no GTK types. `src/ui/` is widgets and the application. Read `DESIGN.md` and `README.md` before proposing structural changes; both are current.
+- `src/core/` — QtCore only, no widgets, no sockets: `scanner` (the quill port: spans + hideable markers), `frontmatter`, `note`, `vault`, `index`, `search` (fuzzy titles, substring text, BM25, RRF fusion), `semantic` (chunks, digests, the vector store, the catch-up plan), `sync` (three-snapshot plan, `gather`/`apply`), `tree`, `config`, `notebook`.
+- `src/net/` — QtNetwork, blocking, worker threads only: `http` (a small HTTP/1.1 client over QTcpSocket), `embedder` (llama.cpp `/v1/embeddings`), `vaultserver` (brain-server's vault and vector routes).
+- `src/backend.*` — the `App` singleton: owns the Notebook, the timers (2 s save tick, 5 s catch-up delay, 60 s sync), the watcher, the worker threads, and formats every row QML shows. `src/editor.*` — the editing model. `src/qml/` — the views.
 
-**`Notebook` (`core/src/notebook.rs`) is the only thing that writes a file or mutates the index.** Widgets emit signals of intent and change nothing themselves, so there is exactly one place a note can be lost. `BrainApplication` holds it in a `RefCell` and does what only a toolkit can: actions, the save tick, file monitors, worker threads, and turning an outcome into a toast. Keep new behaviour on the notebook's side of the line.
+## Rules
 
-**A notebook method returns what happened, not what to display.** `Renamed::Done { links }` carries the count; the sentence about it belongs to the shell, because a second shell will word it differently. That is also what the tests assert on.
+**`Notebook` is the only thing that writes a file or mutates the index.** QML emits intent through `App`; nothing in QML or `Editor` touches the vault. A notebook method returns what happened, not what to display.
 
-**Push logic down into `brain-core`.** A rule that lives there is tested by `cargo test` with no display; the same rule inside a widget is only reachable through the GTK harness. The sidebar's tree is the worked example — `core/src/tree.rs` decides what the rows are, and the widget only draws them.
+**The editor's source is canonical; the display is derived.** `Editor` keeps the note's body, the caret, and a display↔source offset map. The TextEdit shows the display (syntax removed outside the caret's construct); an edit the TextEdit makes is mapped back onto the source through the map, then the display is rebuilt. Never write to the QTextDocument except through `syncDocument`, and never from inside `contentsChange` (it is deferred to the next event-loop turn for that reason).
 
-**The embedder stayed in the shell on purpose.** `semantic::Embedder` is a trait in the core; `src/ui/embedder.rs` is libsoup's answer to it. Keeping the transport out of the core is what stops GLib being dragged onto a platform that has no use for it — anything new that opens a socket goes on the shell side of that trait too. `semantic::Shared` and `src/ui/shared_vectors.rs` are the same pattern for the shared vector store.
+**A sync pass is two halves on two threads.** `sync::gather` does the network and reads local files, on a worker; `sync::apply` does every local write on the main thread, where it knows which note is open and whether it is dirty. Keep new sync behaviour on the matching side.
 
-**A sync pass is two halves and they run on different threads.** `sync::gather` does the network and reads local files but writes none, on the worker; `sync::apply` does every local write on the thread that owns the notebook. This is not the catch-up's shape and must not be rewritten into it — the catch-up is handed copies and gives back a new store, while a sync writes files the save tick is also writing. New sync behaviour goes on whichever side matches: reads and network in `gather`, writes in `apply`.
+**Workers hop back with `Backend::runOnMain`**, which checks the static instance under a mutex and queues onto the main thread. Results carry the `m_generation` they were started under; a vault switch bumps it and stale results are dropped.
 
-**Wire formats are pinned on both sides.** The client and `brain-vectors` define the same JSON in two crates that never see each other's types, so each has a test asserting the exact bytes. Change one and the other's test fails, which is the only warning there is.
+**u64 on the wire.** Hashes and digests are FNV-1a u64 and exceed a JSON double. Bodies are built by hand (`VaultServer::putBody` etc.) and replies pass through `json::quoteBigIntegers` before parsing. Change the format on either side and `test_wire` fails, which is the only warning there is.
 
-## Testing
+**Frontmatter is not rendered.** The editor holds the body; the rail edits tags and aliases. Unknown keys round-trip byte for byte — `test_frontmatter` asserts it.
 
-Widget tests need a display; model tests do not and are the bulk of the suite. `test.sh` sets `GTK_A11Y=none` and `GSETTINGS_BACKEND=memory` so tests never touch real user state — keep that true for anything new.
-
-GTK is thread-affine, so `tests/widgets.rs` and `tests/lifecycle.rs` are each **one `#[test]` over a table** — `CASES` and `STEPS`. Add a case to the array; a second `#[test]` that touches GTK will fail. `lifecycle.rs` steps run in order against one shared vault, so a step that leaves a note behind breaks a later assertion.
-
-`core/tests/notebook.rs` has none of those constraints — a plain `#[test]` per scenario, no display, no shared vault. **A new rule about what happens to the vault goes there, not in `lifecycle.rs`.** Reserve `lifecycle.rs` for what genuinely needs a widget in the loop.
-
-## Conventions
-
-- Use the `developing-gtk-apps` and `designing-gnome-ui` skills for widget, threading, and HIG decisions rather than deriving them again.
-- Edit files with the Edit tool. Do not rewrite Rust sources through `python3 - <<PY` heredocs or `sed -i` — including test files.
-- **Take a value out of a `RefCell` before a `match` or `if let` scrutinee.** The borrow lives for the whole body, and a `replace` inside it panics at runtime with nothing at compile time to warn you. This has cost real debugging more than once.
-- When behaviour ends up differing from `DESIGN.md`, add it to that file's "Built differently, or not built" section rather than editing the design to match. The record of why is the point.
-- The sibling apps (familiar, planner, stickies, youtube-downloader) share this layout and these scripts; a pattern established in one is the pattern here.
+Sizes only through `T.s()` / `T.f()`; colours only through `T.<role>` (derived in `src/palette.cpp` from colors.toml — the handoff's greys are surface roles, its amber is `accent`, green `positive`, cyan `teal`, pink `negative`). Read the `omarchy-app-dev` skill before changing theming, scaling or packaging. The design handoff is in `docs/handoff/`.
