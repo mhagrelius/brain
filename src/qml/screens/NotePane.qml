@@ -94,7 +94,7 @@ Item {
                 if (App.reading) return
                 textEdit.forceActiveFocus()
                 textEdit.cursorPosition = textEdit.length
-                if (m.button === Qt.RightButton) { pane.rememberSelection(); App.insertFilter(""); editorMenu.openAt(mapToItem(pane, m.x, m.y)) }
+                if (m.button === Qt.RightButton) { pane.rememberSelection(); App.insertFilter(""); var p = mapToItem(pane, m.x, m.y); Qt.callLater(function() { editorMenu.openAt(p) }) }
             }
         }
 
@@ -196,6 +196,9 @@ Item {
             }
             // The menu opens on the release: opened on the press, the release
             // would land on the menu's own dismiss overlay and close it again.
+            // The composed click is consumed here, or it would propagate into
+            // the menu's dismiss overlay and close what the release just opened.
+            onClicked: function(m) { if (m.button === Qt.RightButton) m.accepted = true }
             onReleased: function(m) {
                 if (m.button !== Qt.RightButton || App.reading) return
                 var at = textEdit.positionAt(m.x, m.y)
@@ -203,7 +206,8 @@ Item {
                 textEdit.forceActiveFocus()
                 pane.rememberSelection()
                 App.insertFilter("")
-                editorMenu.openAt(mapToItem(pane, m.x, m.y))
+                var p = mapToItem(pane, m.x, m.y)
+                Qt.callLater(function() { editorMenu.openAt(p) })
             }
             onPressed: function(m) {
                 if (m.button === Qt.RightButton) return   // accepted; handled on release

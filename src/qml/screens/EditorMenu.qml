@@ -15,10 +15,12 @@ Item {
     anchors.fill: parent
     z: 40
 
+    property real anchorX: 0
+    property real anchorY: 0
     function openAt(p) {
+        anchorX = p.x
+        anchorY = p.y
         open = true
-        box.x = Math.max(T.s(4), Math.min(p.x, width - box.width - T.s(4)))
-        box.y = Math.max(T.s(4), Math.min(p.y, height - box.height - T.s(4)))
     }
     function close() { open = false }
 
@@ -32,6 +34,10 @@ Item {
     MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onClicked: menu.close() }
     Rectangle {
         id: box
+        // Bound, not assigned: the clamp has to follow the box's own height,
+        // which is only known once the rows have laid out.
+        x: Math.max(T.s(4), Math.min(menu.anchorX, menu.width - width - T.s(4)))
+        y: Math.max(T.s(4), Math.min(menu.anchorY, menu.height - height - T.s(4)))
         width: T.s(300)
         height: col.height + 2 * T.s(4) + 2 * T.line
         radius: T.s(8)
