@@ -194,17 +194,19 @@ Item {
                 var linky = App.editor.linkAt(p).length > 0 || App.editor.urlAt(p).length > 0 || App.editor.tagAt(p).length > 0
                 hoverLink = linky && (App.reading || (m.modifiers & Qt.ControlModifier))
             }
+            // The menu opens on the release: opened on the press, the release
+            // would land on the menu's own dismiss overlay and close it again.
+            onReleased: function(m) {
+                if (m.button !== Qt.RightButton || App.reading) return
+                var at = textEdit.positionAt(m.x, m.y)
+                if (textEdit.selectionStart === textEdit.selectionEnd || at < textEdit.selectionStart || at > textEdit.selectionEnd) textEdit.cursorPosition = at
+                textEdit.forceActiveFocus()
+                pane.rememberSelection()
+                App.insertFilter("")
+                editorMenu.openAt(mapToItem(pane, m.x, m.y))
+            }
             onPressed: function(m) {
-                if (m.button === Qt.RightButton) {
-                    if (App.reading) return
-                    var at = textEdit.positionAt(m.x, m.y)
-                    if (textEdit.selectionStart === textEdit.selectionEnd || at < textEdit.selectionStart || at > textEdit.selectionEnd) textEdit.cursorPosition = at
-                    textEdit.forceActiveFocus()
-                    pane.rememberSelection()
-                    App.insertFilter("")
-                    editorMenu.openAt(mapToItem(pane, m.x, m.y))
-                    return
-                }
+                if (m.button === Qt.RightButton) return   // accepted; handled on release
                 var wants = App.reading || (m.modifiers & Qt.ControlModifier)
                 if (!wants) { m.accepted = false; return }
                 var p = textEdit.positionAt(m.x, m.y)

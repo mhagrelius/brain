@@ -8,6 +8,7 @@
 
 #include <QCommandLineParser>
 #include <QKeyEvent>
+#include <QMouseEvent>
 #include <QKeySequence>
 #include <QDir>
 #include <QGuiApplication>
@@ -191,7 +192,7 @@ int main(int argc, char *argv[]) {
     // window once it is up, so a grab can show the editor after typing.
     QStringList steps;
     for (const QString &act : parser.value(actOption).split(u',', Qt::SkipEmptyParts)) {
-        if (act.startsWith(QStringLiteral("type:")) || act.startsWith(QStringLiteral("key:"))) steps.append(act);
+        if (act.startsWith(QStringLiteral("type:")) || act.startsWith(QStringLiteral("key:")) || act.startsWith(QStringLiteral("click:"))) steps.append(act);
         else backend.act(act);
     }
 
@@ -215,7 +216,17 @@ int main(int argc, char *argv[]) {
         if (i == 0) emit backend.editorFocusRequested();
         if (i >= steps.size()) return;
         const QString step = steps.at(i);
-        if (step.startsWith(QStringLiteral("type:"))) {
+        if (step.startsWith(QStringLiteral("click:"))) {
+            // click:x;y[;right][;double] — window coordinates at design scale.
+            const QStringList parts = step.mid(6).split(u';');
+            const QPointF at(parts.value(0).toDouble(), parts.value(1).toDouble());
+            const Qt::MouseButton button = parts.contains(QStringLiteral("right")) ? Qt::RightButton : Qt::LeftButton;
+            const int times = parts.contains(QStringLiteral("double")) ? 2 : 1;
+            for (int n = 0; n < times; ++n) {
+                QCoreApplication::postEvent(window, new QMouseEvent(n == 1 ? QEvent::MouseButtonDblClick : QEvent::MouseButtonPress, at, at, window->mapToGlobal(at.toPoint()), button, button, Qt::NoModifier));
+                QCoreApplication::postEvent(window, new QMouseEvent(QEvent::MouseButtonRelease, at, at, window->mapToGlobal(at.toPoint()), button, Qt::NoButton, Qt::NoModifier));
+            }
+        } else if (step.startsWith(QStringLiteral("type:"))) {
             for (const QChar c : step.mid(5)) {
                 QCoreApplication::postEvent(window, new QKeyEvent(QEvent::KeyPress, 0, Qt::NoModifier, QString(c)));
                 QCoreApplication::postEvent(window, new QKeyEvent(QEvent::KeyRelease, 0, Qt::NoModifier, QString(c)));
