@@ -84,6 +84,7 @@ qt_add_qml_module(brain
         src/qml/screens/StatusPanel.qml
         src/qml/screens/FirstRun.qml
         src/qml/screens/RowMenu.qml
+        src/qml/screens/EditorMenu.qml
     RESOURCES ${BRAIN_ICONS}
 )
 

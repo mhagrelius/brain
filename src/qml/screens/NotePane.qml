@@ -94,7 +94,7 @@ Item {
                 if (App.reading) return
                 textEdit.forceActiveFocus()
                 textEdit.cursorPosition = textEdit.length
-                if (m.button === Qt.RightButton) { pane.rememberSelection(); App.openInsert() }
+                if (m.button === Qt.RightButton) { pane.rememberSelection(); App.insertFilter(""); editorMenu.openAt(mapToItem(pane, m.x, m.y)) }
             }
         }
 
@@ -201,7 +201,8 @@ Item {
                     if (textEdit.selectionStart === textEdit.selectionEnd || at < textEdit.selectionStart || at > textEdit.selectionEnd) textEdit.cursorPosition = at
                     textEdit.forceActiveFocus()
                     pane.rememberSelection()
-                    App.openInsert()
+                    App.insertFilter("")
+                    editorMenu.openAt(mapToItem(pane, m.x, m.y))
                     return
                 }
                 var wants = App.reading || (m.modifiers & Qt.ControlModifier)
@@ -255,4 +256,6 @@ Item {
             onDropped: function(drop) { if (drop.hasUrls) { var list = []; for (var i = 0; i < drop.urls.length; ++i) list.push(String(drop.urls[i])); App.attachUrls(list); drop.accept() } }
         }
     }
+
+    EditorMenu { id: editorMenu; editor: textEdit }
 }
