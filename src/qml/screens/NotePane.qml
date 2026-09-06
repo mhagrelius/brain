@@ -89,7 +89,13 @@ Item {
             x: textEdit.x; width: textEdit.width
             y: textEdit.y + textEdit.contentHeight; height: Math.max(0, editorArea.contentHeight - y)
             cursorShape: Qt.IBeamCursor
-            onClicked: { if (!App.reading) { textEdit.forceActiveFocus(); textEdit.cursorPosition = textEdit.length } }
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
+            onClicked: function(m) {
+                if (App.reading) return
+                textEdit.forceActiveFocus()
+                textEdit.cursorPosition = textEdit.length
+                if (m.button === Qt.RightButton) { pane.rememberSelection(); App.openInsert() }
+            }
         }
 
         // Decorations behind the text: quote bars, table and code boxes.
@@ -175,10 +181,11 @@ Item {
         }
 
         // Ctrl+Click follows a link, toggles a task; a plain click does in reading mode.
+        // Right-click opens the insert menu at the caret, keeping a selection.
         MouseArea {
             x: textEdit.x; y: textEdit.y; width: textEdit.width; height: textEdit.contentHeight
             hoverEnabled: true
-            acceptedButtons: Qt.LeftButton
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
             propagateComposedEvents: true
             cursorShape: hoverLink ? Qt.PointingHandCursor : Qt.IBeamCursor
             property bool hoverLink: false
@@ -188,6 +195,15 @@ Item {
                 hoverLink = linky && (App.reading || (m.modifiers & Qt.ControlModifier))
             }
             onPressed: function(m) {
+                if (m.button === Qt.RightButton) {
+                    if (App.reading) return
+                    var at = textEdit.positionAt(m.x, m.y)
+                    if (textEdit.selectionStart === textEdit.selectionEnd || at < textEdit.selectionStart || at > textEdit.selectionEnd) textEdit.cursorPosition = at
+                    textEdit.forceActiveFocus()
+                    pane.rememberSelection()
+                    App.openInsert()
+                    return
+                }
                 var wants = App.reading || (m.modifiers & Qt.ControlModifier)
                 if (!wants) { m.accepted = false; return }
                 var p = textEdit.positionAt(m.x, m.y)

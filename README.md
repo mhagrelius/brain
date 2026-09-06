@@ -77,7 +77,7 @@ uses too — as `sync_url`, `sync_token`, `vectors_url`, `vectors_token` and
 
 `1`–`3` views · `Ctrl+N` new note · `Ctrl+K` go to note · `Ctrl+Shift+F`
 search text · `Ctrl+F` or `/` filter the tree · `Ctrl+E` reading mode ·
-`Ctrl+/` insert menu (`Ctrl+Space` too, where fcitx5 does not own it) · `Ctrl+Shift+N` capture · `Ctrl+S` save now ·
+`Ctrl+/` or a right-click in the editor for the insert menu (`Ctrl+Space` too, where fcitx5 does not own it) · `Ctrl+Shift+N` capture · `Ctrl+S` save now ·
 `Ctrl+Shift+S` sync and search status · `Shift+F10` row menu.
 
 ## How it works
