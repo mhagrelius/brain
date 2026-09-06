@@ -39,7 +39,9 @@ Window {
     Shortcut { sequence: "Ctrl+Shift+F"; context: Qt.ApplicationShortcut; onActivated: { win.closeSurfaces(); App.openSearch("text") } }
     Shortcut { sequence: "Ctrl+F"; context: Qt.ApplicationShortcut; onActivated: { win.closeSurfaces(); note.focusSearch() } }
     Shortcut { sequence: "Ctrl+E"; context: Qt.ApplicationShortcut; onActivated: App.toggleReading() }
-    Shortcut { sequence: "Ctrl+Space"; context: Qt.ApplicationShortcut; onActivated: { if (App.insertOpen) App.closeInsert(); else { win.closeSurfaces(); note.rememberSelection(); App.openInsert() } } }
+    // Ctrl+Space is also fcitx5's input-method trigger, which eats it before
+    // the app sees it; Ctrl+/ is the binding that survives an IME.
+    Shortcut { sequences: ["Ctrl+/", "Ctrl+Space"]; context: Qt.ApplicationShortcut; onActivated: { if (App.insertOpen) App.closeInsert(); else { win.closeSurfaces(); note.rememberSelection(); App.openInsert() } } }
     Shortcut { sequences: ["Meta+N", "Ctrl+Shift+N"]; context: Qt.ApplicationShortcut; onActivated: { win.closeSurfaces(); App.openCapture() } }
     Shortcut { sequence: "Ctrl+S"; context: Qt.ApplicationShortcut; onActivated: App.saveNow() }
     Shortcut { sequence: "Ctrl+Shift+S"; context: Qt.ApplicationShortcut; onActivated: App.toggleStatus() }

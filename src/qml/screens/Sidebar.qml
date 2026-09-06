@@ -203,7 +203,7 @@ Rectangle {
         height: T.s(26)
         color: T.window
         Rectangle { width: parent.width; height: T.line; color: T.divider }
-        Mono { x: T.s(16); anchors.verticalCenter: parent.verticalCenter; text: "Ctrl+K · insert Ctrl+Space"; px: 10; color: T.dimmest }
+        Mono { x: T.s(16); anchors.verticalCenter: parent.verticalCenter; text: "Ctrl+K · insert Ctrl+/"; px: 10; color: T.dimmest }
         Mono { anchors.right: parent.right; anchors.rightMargin: T.s(16); anchors.verticalCenter: parent.verticalCenter; text: "1-3"; px: 10; color: T.dimmest }
     }
 
