@@ -1,0 +1,49 @@
+{
+  "nextId": 5,
+  "tasks": [
+    {
+      "id": "1",
+      "subject": "Add depth-cue tokens (veil, shadow, sunken) to palette + T.qml",
+      "description": "palette.h/.cpp: veil rgba(0,0,0,.18) + shadow black (fixed, theme-independent per audit rule 1); sunken mix(dbg,bg,.40) = mock #1f1f1f for completion/table fills. T.qml: expose veil/shadow/sunken.",
+      "status": "completed",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1789694432099,
+      "updatedAt": 1789694573697
+    },
+    {
+      "id": "2",
+      "subject": "Replace slab shadows with MultiEffect DropShadow on all surfaces",
+      "description": "New components/DropShadow.qml wrapping MultiEffect with handoff literal values (popover 0/18/40/.5, menu 0/22/50/.55). Wire into Popover.qml (menuShadow prop), SearchPanel (menu), RowMenu (add missing shadow), EditorMenu (replace 0.25 slab), Toasts (replace 0.22 slab). Main.qml scrim → T.veil. NotePane/CapturePanel completion fill T.sunken; NotePane completion border → T.divider; EditorMenu rows 28→30.",
+      "status": "completed",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1789694446342,
+      "updatedAt": 1789694803501
+    },
+    {
+      "id": "3",
+      "subject": "Visual verification via offscreen grabs",
+      "description": "bin/grab gets rowmenu/editormenu/completion lines (click:/type: steps). Render each surface offscreen at scale 1, crop corners, confirm: single crisp 1px border, soft gaussian bleed (no hard ring), neutral veil. Confirm panels still take input (row clicks work via grab steps).",
+      "status": "completed",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1789694455573,
+      "updatedAt": 1789697295965
+    },
+    {
+      "id": "4",
+      "subject": "Decisions doc + ctest run",
+      "description": "Create docs/decisions.md recording pre-existing undocumented departures kept (veil behind summoned panels — spec silent; value fixed rgba(0,0,0,.18) now tokenized). New changes conform, no entries. Then cd build && ctest --output-on-failure.",
+      "status": "completed",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1789694458154,
+      "updatedAt": 1789697308559
+    }
+  ]
+}
