@@ -114,7 +114,7 @@ Item {
                     height: to.y + to.height - from.y + T.s(4)
                     width: parent.width
                     Rectangle { visible: modelData.kind === "quote"; x: 0; width: T.s(2); height: parent.height; color: T.activeFill }
-                    Rectangle { visible: modelData.kind === "table" || modelData.kind === "code"; anchors.fill: parent; radius: T.s(6); color: T.card; border.width: T.line; border.color: T.divider }
+                    Rectangle { visible: modelData.kind === "table" || modelData.kind === "code"; anchors.fill: parent; radius: T.s(6); color: T.sunken; border.width: T.line; border.color: T.divider }
                 }
             }
         }
@@ -226,6 +226,7 @@ Item {
         }
 
         // [[ completion: the same candidates capture uses.
+        DropShadow { source: completion; anchors.fill: completion }
         Rectangle {
             id: completion
             property var candidates: App.editor.completing ? App.linkCandidates(App.editor.completionQuery) : []
@@ -238,7 +239,7 @@ Item {
             y: textEdit.y + at.y + at.height + T.s(4)
             width: T.s(300)
             height: compCol.height + 2 * T.s(4) + 2 * T.line
-            radius: T.s(6); color: T.card; border.width: T.line; border.color: T.border
+            radius: T.s(6); color: T.sunken; border.width: T.line; border.color: T.divider
             z: 5
             Column {
                 id: compCol

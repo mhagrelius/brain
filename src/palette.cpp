@@ -181,6 +181,8 @@ void Palette::rebuild() {
     r["card"] = dbg;
     r["sidebar"] = mix(dbg, bg, 0.15);
     r["header"] = mix(dbg, bg, 0.40);
+    // The mock's inline list/table fill (#1f1f1f): between window and card.
+    r["sunken"] = mix(dbg, bg, 0.40);
     r["groupRow"] = mix(dbg, bg, 0.60);
     r["hover"] = r["header"];
     r["divider"] = r["groupRow"];
@@ -188,6 +190,10 @@ void Palette::rebuild() {
     r["border"] = mix(bg, sel, 0.50);
     r["borderStrong"] = sel;
     r["tooltipBg"] = dbg;
+
+    // Depth cues are fixed, not theme-tinted: the veil behind summoned
+    // surfaces is rgba(0,0,0,.18) on every theme, and `shadow` is the
+    // drop-shadow colour (its .5/.55 alpha lives with the shadow geometry).
 
     r["text"] = fg;
     r["text2"] = lfg;
@@ -227,6 +233,9 @@ void Palette::rebuild() {
     r["hintText"] = mix(lfg, muted, 0.25);
     r["meta"] = mix(lfg, muted, 0.5);
     r["dimmest"] = mix(dfg, muted, 0.6);
+
+    r["veil"] = QColor::fromRgbF(0.0, 0.0, 0.0, 0.18);
+    r["shadow"] = QColor(0, 0, 0);
 
     m_roles = r;
 }

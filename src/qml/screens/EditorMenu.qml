@@ -32,6 +32,7 @@ Item {
     ]
 
     MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onClicked: menu.close() }
+    DropShadow { source: box; anchors.fill: box; menu: true }
     Rectangle {
         id: box
         // Bound, not assigned: the clamp has to follow the box's own height,
@@ -44,7 +45,6 @@ Item {
         color: T.window
         border.width: T.line
         border.color: T.border
-        Rectangle { z: -1; anchors.fill: parent; anchors.margins: -T.s(10); anchors.topMargin: T.s(4); radius: T.s(16); color: Qt.rgba(0, 0, 0, 0.25) }
         Column {
             id: col
             x: T.s(4); y: T.s(4); width: parent.width - 2 * T.s(4)
@@ -53,7 +53,7 @@ Item {
                 Rectangle {
                     required property var modelData
                     readonly property bool usable: !modelData.needs || menu.hasSelection
-                    width: parent.width; height: T.s(28); radius: T.s(6)
+                    width: parent.width; height: T.s(T.menuRowHeight); radius: T.s(6)
                     color: usable && clipHit.containsMouse ? T.selection : "transparent"
                     Sans { x: T.s(12); anchors.verticalCenter: parent.verticalCenter; text: modelData.label; px: 13; color: usable ? T.text2 : T.dimmest }
                     Mono { anchors.right: parent.right; anchors.rightMargin: T.s(12); anchors.verticalCenter: parent.verticalCenter; text: modelData.key; px: 10; color: T.faint }
@@ -66,7 +66,7 @@ Item {
                 model: App.insertRows
                 Rectangle {
                     required property var modelData
-                    width: parent.width; height: T.s(28); radius: T.s(6)
+                    width: parent.width; height: T.s(T.menuRowHeight); radius: T.s(6)
                     color: fmtHit.containsMouse ? T.selection : "transparent"
                     Sans { x: T.s(12); width: T.s(120); anchors.verticalCenter: parent.verticalCenter; text: modelData.label; px: 13; color: T.text2 }
                     Mono { x: T.s(12) + T.s(120); anchors.verticalCenter: parent.verticalCenter; text: modelData.syntax; px: 11.5; color: T.muted }

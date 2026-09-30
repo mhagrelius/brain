@@ -120,7 +120,7 @@ Window {
             anchors.fill: parent
             visible: win.surfaceOpen
             onClicked: win.closeSurfaces()
-            Rectangle { anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.18) }
+            Rectangle { anchors.fill: parent; color: T.veil }
         }
         CapturePanel { x: Math.round((parent.width - width) / 2); y: T.s(120); visible: App.captureOpen }
         InsertMenu { x: Math.round((parent.width - width) / 2); y: T.s(120); visible: App.insertOpen }

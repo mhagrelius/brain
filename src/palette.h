@@ -15,8 +15,8 @@
 // surface stack. With the Kanagawa theme the derivations land on the design
 // mock's exact Kanagawa values.
 #define OMARCHY_COLOR_ROLES(X) \
-    X(window) X(sidebar) X(card) X(header) X(groupRow) X(hover) X(divider) \
-    X(track) X(border) X(borderStrong) \
+    X(window) X(sidebar) X(sunken) X(card) X(header) X(groupRow) X(hover) X(divider) \
+    X(track) X(border) X(borderStrong) X(veil) X(shadow) \
     X(text) X(text2) X(muted) X(faint) \
     X(accent) X(accentText) X(selection) X(activeFill) X(activeText) \
     X(positive) X(positiveDim) X(negative) X(warning) X(caution) X(cautionAlt) \

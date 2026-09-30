@@ -8,12 +8,11 @@ Item {
     default property alias body: inner.data
     property real widthPx: 560
     property alias radiusPx: box.radius
+    // Panels take the popover shadow, menus and search the heavier menu one.
+    property bool menuShadow: false
     width: T.s(widthPx)
     height: inner.childrenRect.height + 2 * T.line
-    // Shadow: three feathered rectangles read close enough to 0 18px 40px rgba(0,0,0,.5).
-    Rectangle { anchors.fill: box; anchors.margins: -T.s(24); anchors.topMargin: -T.s(8); radius: T.s(30); color: Qt.rgba(0, 0, 0, 0.16) }
-    Rectangle { anchors.fill: box; anchors.margins: -T.s(12); anchors.topMargin: 0; radius: T.s(18); color: Qt.rgba(0, 0, 0, 0.18) }
-    Rectangle { anchors.fill: box; anchors.margins: -T.s(4); anchors.topMargin: T.s(4); radius: T.s(12); color: Qt.rgba(0, 0, 0, 0.22) }
+    DropShadow { source: box; anchors.fill: box; menu: pop.menuShadow }
     Rectangle {
         id: box
         anchors.fill: parent

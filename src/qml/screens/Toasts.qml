@@ -18,8 +18,7 @@ Column {
             anchors.right: parent.right
             radius: T.s(8); color: T.window
             border.width: T.line; border.color: T.border
-            // Shadow.
-            Rectangle { z: -1; anchors.fill: parent; anchors.margins: -T.s(10); anchors.topMargin: T.s(4); radius: T.s(16); color: Qt.rgba(0, 0, 0, 0.22) }
+            DropShadow { source: parent; anchors.fill: parent }
 
             Row {
                 id: osdRow

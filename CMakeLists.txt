@@ -60,6 +60,7 @@ qt_add_qml_module(brain
         src/qml/Main.qml
         src/qml/T.qml
         src/qml/components/Card.qml
+        src/qml/components/DropShadow.qml
         src/qml/components/Eyebrow.qml
         src/qml/components/Field.qml
         src/qml/components/HoverRow.qml

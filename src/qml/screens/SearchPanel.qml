@@ -8,6 +8,7 @@ import "../components"
 Popover {
     id: panel
     widthPx: 660
+    menuShadow: true   // the handoff shades the search panel like a menu
     property int pick: 0
     readonly property int count: App.hits.length
     Component.onCompleted: if (visible) { query.text = App.searchQuery; query.forceActiveFocus() }

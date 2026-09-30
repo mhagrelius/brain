@@ -37,6 +37,7 @@ Item {
     }
 
     MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onClicked: menu.close() }
+    DropShadow { source: box; anchors.fill: box; menu: true }
     Rectangle {
         id: box
         width: T.s(200)

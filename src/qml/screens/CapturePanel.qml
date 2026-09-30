@@ -79,7 +79,7 @@ Popover {
                 visible: panel.candidates.length > 0
                 x: T.s(14); y: box.y + box.height + T.s(6); width: box.width
                 height: listCol.height + 2 * T.line
-                radius: T.s(6); color: T.card; border.width: T.line; border.color: T.divider
+                radius: T.s(6); color: T.sunken; border.width: T.line; border.color: T.divider
                 Column {
                     id: listCol
                     x: T.line; y: T.line; width: parent.width - 2 * T.line

@@ -24,6 +24,7 @@ QtObject {
     readonly property bool dark: Palette.dark
     readonly property color window: Palette.window
     readonly property color sidebar: Palette.sidebar
+    readonly property color sunken: Palette.sunken
     readonly property color card: Palette.card
     readonly property color header: Palette.header
     readonly property color groupRow: Palette.groupRow
@@ -60,6 +61,9 @@ QtObject {
     readonly property color destructiveHover: Palette.destructiveHover
     readonly property color tealBorder: Palette.tealBorder
     readonly property color tooltipBg: Palette.tooltipBg
+    // Depth cues: fixed across themes (see palette.cpp).
+    readonly property color veil: Palette.veil
+    readonly property color shadow: Palette.shadow
 
     // Geometry from the handoff.
     readonly property int sidebarWidth: 290
